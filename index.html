@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#c70102">
+  <meta name="description" content="Dinner Burger — commande de burgers faits maison a Goma via WhatsApp, et outil de pilotage pour le gerant (commandes, stock, finance, ambassadeurs).">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Dinner Burger</title>
+
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js" defer crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" defer crossorigin="anonymous"></script>
+</head>
+<body>
+  <noscript>
+    <div style="padding:30px;text-align:center;font-family:sans-serif;background:#0a0a0a;color:#fff;min-height:100vh">
+      <h1>Dinner Burger</h1>
+      <p>Cette application necessite JavaScript pour fonctionner. Merci de l'activer dans votre navigateur.</p>
+    </div>
+  </noscript>
+
+  <div class="ib" id="ib">
+    <span>Installer Dinner Burger</span>
+    <button onclick="ip()">Installer</button>
+  </div>
+
+  <!-- ===== MODE CLIENT ===== -->
+  <div id="cm" style="display:none">
+    <div class="ch">
+      <header class="chd">
+        <h1>DINNER BURGER</h1>
+        <p>Le gout qui rassemble</p>
+      </header>
+      
+      <nav class="cn">
+        <button onclick="scp('menu')" class="a" id="cn-menu">
+          <span class="i">🍔</span><span>Menu</span>
+          <span id="cb" style="position:absolute;top:2px;right:8px;background:var(--s);color:#000;font-size:.6rem;padding:2px 6px;border-radius:10px;display:none;font-weight:700">0</span>
+        </button>
+        <button onclick="scp('cart')" id="cn-cart"><span class="i">🛒</span><span>Panier</span></button>
+        <button onclick="scp('histoire')" id="cn-histoire"><span class="i">📖</span><span>Histoire</span></button>
+        <button onclick="scp('track')" id="cn-track"><span class="i">📍</span><span>Suivi</span></button>
+      </nav>
+
+      <div id="cs-menu" class="cs a">
+        <div style="margin-bottom:15px">
+          <h2 style="font-size:1.1rem;margin-bottom:4px">Notre Menu</h2>
+          <p style="color:var(--t2);font-size:.85rem">Frais, rapide et delicieux</p>
+        </div>
+        <div class="fb" id="ccf">
+          <button class="a" onclick="fcm('all',this)">Tout</button>
+          <button onclick="fcm('burger',this)">Burgers</button>
+          <button onclick="fcm('drink',this)">Boissons</button>
+          <button onclick="fcm('fries',this)">Frites</button>
+          <button onclick="fcm('other',this)">Autres</button>
+        </div>
+        <div class="pg" id="cp"></div>
+      </div>
+
+      <div id="cs-cart" class="cs">
+        <h2 style="font-size:1.1rem;margin-bottom:15px">Votre Panier</h2>
+        <div id="cci"></div>
+        <div class="ct" id="cct" style="display:none">
+          <div class="l">Total a payer</div>
+          <div class="am" id="cta">0 FC</div>
+        </div>
+        <div id="cce" class="es">
+          <div class="i">🛒</div>
+          <p>Votre panier est vide</p>
+          <p style="font-size:.8rem">Ajoutez des produits depuis le menu</p>
+        </div>
+        
+        <form class="cf" id="cof" style="display:none">
+          <h3 style="font-size:1rem;margin-bottom:5px">Informations</h3>
+          <input aria-label="Votre nom complet" type="text" id="co-n" name="co-n" placeholder="Votre nom complet" required>
+          <input aria-label="Votre numero de telephone" type="tel" id="co-p" name="co-p" placeholder="Votre numero de telephone" required>
+          <label for="oc">Type de commande</label>
+          <div class="rg">
+            <div class="rb a" onclick="sot(this,'emporter')" id="rb-e">🥡 A emporter</div>
+            <div class="rb" onclick="sot(this,'livraison')" id="rb-l">🛵 Livraison</div>
+            <div class="rb" onclick="sot(this,'surplace')" id="rb-s">🪑 Sur place</div>
+          </div>
+          <input aria-label="Adresse / Numero de table" type="text" id="co-a" name="co-a" placeholder="Adresse / Numero de table">
+          <textarea aria-label="Instructions (allergies, sauces...)" id="co-nt" name="co-nt" placeholder="Instructions (allergies, sauces...)"></textarea>
+          <input aria-label="Code ambassadeur (optionnel)" type="text" id="co-am" name="co-am" placeholder="Code ambassadeur (optionnel)">
+          <button type="button" class="bw" onclick="swa()">💬 Commander par WhatsApp</button>
+          <button type="button" class="bq" onclick="goqr()">📷 Generer QR Code</button>
+        </form>
+
+        <div class="qrd" id="cqr" style="display:none">
+          <div id="cqri" style="display:flex;justify-content:center;padding:10px"></div>
+          <p>Montrez ce QR au caissier</p>
+        </div>
+      </div>
+
+      <div id="cs-histoire" class="cs">
+        <div class="story">
+          <h2 style="font-size:1.3rem;margin-bottom:15px">Notre histoire</h2>
+
+          <p style="margin-bottom:14px;line-height:1.7">
+            Dinner Burger est ne a Goma d'une idee simple : offrir un burger vraiment fait maison,
+            dans une ville ou la restauration rapide de qualite se fait rare. Pas de chaine, pas de
+            recette copiee ailleurs — juste une famille qui a decide de faire les choses bien.
+          </p>
+
+          <p style="margin-bottom:14px;line-height:1.7">
+            Tout part du pain. Chaque pain a burger est prepare a la main par la maman du fondateur,
+            une cheffe formee au metier, qui apporte tout son savoir-faire pour un pain moelleux,
+            frais, different de tout ce qu'on trouve d'habitude. C'est le coeur du produit :
+            sans ce pain, il n'y a pas de Dinner Burger.
+          </p>
+
+          <p style="margin-bottom:14px;line-height:1.7">
+            A cote, on mise sur une viande grillee a la congolaise, avec de vrais gouts d'ici,
+            et une boisson signature — le Congo Lait — qu'on ne trouve nulle part ailleurs.
+            Chaque commande est preparee au moment, pensee comme un repas de famille plutot
+            qu'un simple fast-food.
+          </p>
+
+          <p style="margin-bottom:14px;line-height:1.7">
+            Dinner Burger fonctionne comme une dark kitchen : pas de grande salle, pas de superflu.
+            On concentre tout sur la qualite du produit et la rapidite du service, en prenant les
+            commandes directement par WhatsApp et Facebook. C'est un choix assume, pour rester
+            proche des clients tout en gardant les couts justes.
+          </p>
+
+          <p style="margin-bottom:4px;line-height:1.7;font-weight:700;color:var(--s)">
+            "Le gout qui rassemble"
+          </p>
+          <p style="line-height:1.7;color:var(--t2);font-size:.9rem">
+            Ce n'est pas juste un slogan. C'est l'idee que derriere chaque burger, il y a une
+            famille, un savoir-faire, et l'envie de faire vivre un vrai moment a chaque client —
+            que ce soit a emporter, en livraison, ou sur place.
+          </p>
+        </div>
+      </div>
+
+      <div id="cs-track" class="cs">
+        <div class="es">
+          <div class="i">📍</div>
+          <p>Suivi des commandes</p>
+          <p style="font-size:.8rem">Bientot disponible</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== MODE GERANT ===== -->
+  <div id="mm" style="display:none">
+    <div class="mb">
+      <div class="adb">GERANT</div>
+      <div class="dmb" id="dmb" style="display:none">DONNEES DE TEST</div>
+      <header class="mh">
+        <h1>DINNER BURGER</h1>
+        <p>Le gout qui rassemble — Pilotage</p>
+      </header>
+
+      <nav class="mn">
+        <button onclick="sp('dash')" class="a" id="n-dash"><span class="i">📊</span><span>Accueil</span></button>
+        <button onclick="sp('cmd')" id="n-cmd"><span class="i">📝</span><span>Cmd</span></button>
+        <button onclick="sp('menu')" id="n-menu"><span class="i">🍔</span><span>Menu</span></button>
+        <button onclick="sp('amb')" id="n-amb"><span class="i">🤝</span><span>Amb.</span></button>
+        <button onclick="sp('clients')" id="n-clients"><span class="i">👥</span><span>Clients</span></button>
+        <button onclick="sp('stock')" id="n-stock"><span class="i">📦</span><span>Stock</span></button>
+        <button onclick="sp('finance')" id="n-finance"><span class="i">💰</span><span>Fin.</span></button>
+        <button onclick="sp('analyse')" id="n-analyse"><span class="i">📈</span><span>Analyse</span></button>
+        <button onclick="sp('goals')" id="n-goals"><span class="i">🎯</span><span>Obj.</span></button>
+        <button onclick="sp('sim')" id="n-sim"><span class="i">🔮</span><span>Simul.</span></button>
+        <button onclick="sp('settings')" id="n-settings"><span class="i">⚙️</span><span>Config</span></button>
+      </nav>
+
+      <div id="s-dash" class="sc a">
+        <div id="alerts"></div>
+        <div class="g2">
+          <div class="cd"><h3>CA Auj.</h3><div class="v" id="d-ca">0</div></div>
+          <div class="cd"><h3>Benefice</h3><div class="v" id="d-ben">0</div></div>
+          <div class="cd"><h3>Commandes</h3><div class="v" id="d-cmd">0</div><div class="sb" id="d-cs"></div></div>
+          <div class="cd"><h3>Commissions</h3><div class="v" id="d-com">0</div></div>
+        </div>
+        <div class="g2">
+          <div class="cd"><h3>Nvx Clients</h3><div class="v kp" id="d-new">0</div></div>
+          <div class="cd"><h3>Recurrents</h3><div class="v" id="d-old">0</div></div>
+        </div>
+        <div class="cd">
+          <div class="flex-between">
+            <h3>Evolution</h3>
+            <div class="fb">
+              <button class="a" onclick="scp2('day',this)">Jour</button>
+              <button onclick="scp2('week',this)">Sem.</button>
+              <button onclick="scp2('month',this)">Mois</button>
+            </div>
+          </div>
+          <div class="cc"><canvas id="c1"></canvas></div>
+        </div>
+        <div class="qa">
+          <div class="qx" onclick="sp('cmd')"><div class="i">➕</div><div class="l">Nouvelle Cmd</div></div>
+          <div class="qx" onclick="sp('stock')"><div class="i">📦</div><div class="l">Stocks</div></div>
+          <div class="qx" onclick="sp('sim')"><div class="i">🔮</div><div class="l">Simulateur</div></div>
+          <div class="qx" onclick="sp('goals')"><div class="i">🎯</div><div class="l">Objectifs</div></div>
+        </div>
+      </div>
+
+      <div id="s-cmd" class="sc">
+        <div class="cd">
+          <h3>Nouvelle Commande</h3>
+          <form id="of" onsubmit="ho(event)">
+            <label>Client</label><select id="oc" name="oc" onchange="tnc(this.value)"><option value="">-- Nouveau --</option></select>
+            <div id="ncf"><input aria-label="Nom" type="text" id="ocn" name="ocn" placeholder="Nom"><input aria-label="Telephone" type="tel" id="ocp" name="ocp" placeholder="Telephone"></div>
+            <label for="opm">Produits</label>
+            <div id="ois">
+              <div class="oi">
+                <select class="op" onchange="uot()" required><option value="">Choisir</option></select>
+                <input type="number" class="oq" value="1" min="1" onchange="uot()">
+                <button type="button" class="be bs2" onclick="roi(this)">✕</button>
+              </div>
+            </div>
+            <button type="button" class="bs" onclick="aoi()">+ Produit</button>
+            <label>Paiement</label><select id="opm" name="opm">
+              <option value="cash">Especes</option>
+              <option value="mobile">Mobile Money</option>
+              <option value="card">Carte</option>
+              <option value="other">Autre</option>
+            </select>
+            <label for="oa">Ambassadeur</label><select id="oa" name="oa"><option value="">Aucun</option></select>
+            <div id="oaw" class="al alw" style="display:none"></div>
+            <div class="sr"><span>Total:</span><strong id="otp">0</strong></div>
+            <div class="sr"><span>Cout:</span><span id="ocp2">0</span></div>
+            <div class="sr"><span>Benefice:</span><span id="opr">0</span></div>
+            <button type="submit" class="bm">Valider</button>
+          </form>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+          <button class="bi" onclick="os()">📷 Scanner QR</button>
+          <button class="bs" onclick="iw()">📋 Importer WA</button>
+        </div>
+        <div class="cd">
+          <h3>Historique</h3>
+          <div class="fb">
+            <button class="a" onclick="fo('all',this)">Tout</button>
+            <button onclick="fo('today',this)">Auj.</button>
+            <button onclick="fo('week',this)">Sem.</button>
+          </div>
+          <div style="overflow-x:auto">
+            <table>
+              <caption class="sr-only">Historique des commandes</caption>
+              <thead><tr><th scope="col">N</th><th scope="col">Date</th><th scope="col">Produits</th><th scope="col">Total</th><th scope="col">Ben.</th><th scope="col"></th></tr></thead>
+              <tbody id="cl"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div id="s-menu" class="sc">
+        <div class="cd">
+          <h3>Produit</h3>
+          <form id="pf" onsubmit="hp(event)">
+            <input type="hidden" id="pid" name="pid">
+            <input aria-label="Nom" type="text" id="pn" name="pn" placeholder="Nom" required>
+            <select id="pc" name="pc">
+              <option value="burger">Burger</option>
+              <option value="drink">Boisson</option>
+              <option value="fries">Frites</option>
+              <option value="other">Autre</option>
+            </select>
+            <input aria-label="Prix" type="number" id="pp" name="pp" placeholder="Prix" required>
+            <input aria-label="Cout" type="number" id="pco" name="pco" placeholder="Cout" required>
+            <label style="display:flex;align-items:center;gap:8px;font-size:.9rem;color:var(--t);cursor:pointer" for="s1">
+              <input type="checkbox" id="pav" name="pav" checked style="width:auto"> Disponible
+            </label>
+            <div class="sr"><span>Marge:</span><strong id="pmp">0</strong></div>
+            <button type="submit" class="bm">Enregistrer</button>
+            <button type="button" class="bs" onclick="rpf()" id="pca" style="display:none">Annuler</button>
+          </form>
+        </div>
+        <div class="cd">
+          <h3>Menu</h3>
+          <div class="fb">
+            <button class="a" onclick="fp('all',this)">Tout</button>
+            <button onclick="fp('burger',this)">Burgers</button>
+            <button onclick="fp('drink',this)">Boissons</button>
+            <button onclick="fp('fries',this)">Frites</button>
+          </div>
+          <div style="overflow-x:auto">
+            <table>
+              <caption class="sr-only">Liste du menu</caption>
+              <thead><tr><th scope="col">Nom</th><th scope="col">Cat.</th><th scope="col">Prix</th><th scope="col">Cout</th><th scope="col">Marge</th><th scope="col">Statut</th><th scope="col"></th></tr></thead>
+              <tbody id="ml"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div id="s-amb" class="sc">
+        <div class="cd">
+          <h3>Nouvel Ambassadeur</h3>
+          <form id="af" onsubmit="ha(event)">
+            <input aria-label="Nom" type="text" id="an" name="an" placeholder="Nom" required>
+            <input aria-label="Code (ex: BURGER10)" type="text" id="ac" name="ac" placeholder="Code (ex: BURGER10)" required>
+            <input aria-label="Telephone" type="tel" id="aph" name="aph" placeholder="Telephone">
+            <button type="submit" class="bm">Creer</button>
+          </form>
+        </div>
+        <div class="cd">
+          <h3>Suivi</h3>
+          <div style="overflow-x:auto">
+            <table>
+              <caption class="sr-only">Suivi des ambassadeurs</caption>
+              <thead><tr><th scope="col">Code</th><th scope="col">Nom</th><th scope="col">Nvx</th><th scope="col">CA</th><th scope="col">Com</th><th scope="col">Paye</th><th scope="col">Reste</th><th scope="col"></th></tr></thead>
+              <tbody id="al2"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="cd">
+          <h3>Paiement</h3>
+          <form onsubmit="hcp(event)">
+            <select id="pa" name="pa" required><option value="">Choisir</option></select>
+            <input aria-label="Montant" type="number" id="pam" name="pam" placeholder="Montant" required>
+            <button type="submit" class="bok">Marquer paye</button>
+          </form>
+        </div>
+      </div>
+
+      <div id="s-clients" class="sc">
+        <div class="cd">
+          <h3>Base Clients</h3>
+          <input aria-label="Rechercher..." type="text" id="cs2" name="cs2" placeholder="Rechercher..." oninput="rc()" style="margin-bottom:10px">
+          <div style="overflow-x:auto">
+            <table>
+              <caption class="sr-only">Base clients</caption>
+              <thead><tr><th scope="col">ID</th><th scope="col">Nom</th><th scope="col">Tel</th><th scope="col">Cmd</th><th scope="col">Total</th><th scope="col">Derniere</th><th scope="col">Type</th><th scope="col">Amb.</th></tr></thead>
+              <tbody id="ctl"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div id="s-stock" class="sc">
+        <div class="cd">
+          <h3>Stock</h3>
+          <form id="sf" onsubmit="hs(event)">
+            <input type="hidden" id="sid" name="sid">
+            <input aria-label="Article" type="text" id="sn" name="sn" placeholder="Article" required>
+            <input aria-label="Unite" type="text" id="su" name="su" placeholder="Unite" value="piece">
+            <input aria-label="Quantite" type="number" id="sq" name="sq" placeholder="Quantite" required>
+            <input aria-label="Seuil alerte" type="number" id="sm" name="sm" placeholder="Seuil alerte" required>
+            <input aria-label="Cout unitaire" type="number" id="sc2" name="sc2" placeholder="Cout unitaire" value="0">
+            <button type="submit" class="bm">Enregistrer</button>
+          </form>
+        </div>
+        <div class="cd">
+          <h3>Etat</h3>
+          <div style="overflow-x:auto">
+            <table>
+              <caption class="sr-only">Etat du stock</caption>
+              <thead><tr><th scope="col">Article</th><th scope="col">Qte</th><th scope="col">Unite</th><th scope="col">Alerte</th><th scope="col">Cout</th><th scope="col"></th></tr></thead>
+              <tbody id="sl"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="cd">
+          <h3>Mouvement</h3>
+          <form onsubmit="hsm(event)">
+            <select id="ms" name="ms" required></select>
+            <select id="mt" name="mt" required><option value="in">Entree</option><option value="out">Sortie</option></select>
+            <input aria-label="Quantite" type="number" id="mq" name="mq" placeholder="Quantite" min="1" required>
+            <button type="submit" class="bs">Enregistrer</button>
+          </form>
+        </div>
+      </div>
+
+      <div id="s-finance" class="sc">
+        <div class="g2">
+          <div class="cd"><h3>Tresorerie</h3><div class="v" id="f-ca">0</div></div>
+          <div class="cd"><h3>Epargne</h3><div class="v" id="f-sa">0</div></div>
+          <div class="cd"><h3>Reinvesti</h3><div class="v" id="f-re">0</div></div>
+          <div class="cd"><h3>Benef. Dispo</h3><div class="v" id="f-av">0</div></div>
+        </div>
+        <div class="cd">
+          <h3>Nouvelle Depense</h3>
+          <form id="ef" onsubmit="he(event)">
+            <input type="date" id="ed" name="ed" required>
+            <select id="ec" name="ec" required>
+              <option value="">Categorie</option>
+              <option value="material">Materiel</option>
+              <option value="ingredients">Ingredients</option>
+              <option value="packaging">Emballages</option>
+              <option value="marketing">Marketing</option>
+              <option value="transport">Transport</option>
+              <option value="communication">Communication</option>
+              <option value="staff">Personnel</option>
+              <option value="other">Autres</option>
+            </select>
+            <input aria-label="Montant" type="number" id="ea" name="ea" placeholder="Montant" required>
+            <input aria-label="Description" type="text" id="ed2" name="ed2" placeholder="Description">
+            <button type="submit" class="bm">Enregistrer</button>
+          </form>
+        </div>
+        <div class="cd">
+          <h3>Depenses</h3>
+          <div style="overflow-x:auto">
+            <table>
+              <caption class="sr-only">Depenses</caption>
+              <thead><tr><th scope="col">Date</th><th scope="col">Cat.</th><th scope="col">Montant</th><th scope="col">Desc.</th><th scope="col"></th></tr></thead>
+              <tbody id="el"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="cd">
+          <h3>Repartition</h3>
+          <div class="cc"><canvas id="c2"></canvas></div>
+        </div>
+      </div>
+
+      <div id="s-analyse" class="sc">
+        <div class="cd">
+          <h3>KPIs</h3>
+          <div class="g2">
+            <div class="cd" style="background:rgba(33,150,243,0.08)"><h3>Produit Star</h3><div class="v" id="a-pp">-</div></div>
+            <div class="cd" style="background:rgba(76,175,80,0.08)"><h3>Top Amb.</h3><div class="v" id="a-ta">-</div></div>
+            <div class="cd" style="background:rgba(255,152,0,0.08)"><h3>CAC</h3><div class="v" id="a-cac">-</div></div>
+            <div class="cd" style="background:rgba(156,39,176,0.08)"><h3>Ben/Cmd</h3><div class="v" id="a-ap">-</div></div>
+          </div>
+        </div>
+        <div class="cd">
+          <h3>Questions Rapides</h3>
+          <div class="sr"><span>Produit le plus rentable ?</span><strong id="q1">-</strong></div>
+          <div class="sr"><span>Meilleur ambassadeur ?</span><strong id="q2">-</strong></div>
+          <div class="sr"><span>Cout acquisition client ?</span><strong id="q3">-</strong></div>
+          <div class="sr"><span>Benefice moyen / cmd ?</span><strong id="q4">-</strong></div>
+          <div class="sr"><span>Cmd restantes objectif ?</span><strong id="q5">-</strong></div>
+          <div class="sr"><span>Reinvestissable ?</span><strong id="q6">-</strong></div>
+          <div class="sr"><span>Commissions / Benefice ?</span><strong id="q7">-</strong></div>
+          <div class="sr"><span>Meilleur jour ?</span><strong id="q8">-</strong></div>
+        </div>
+        <div class="cd">
+          <h3>Performance Produits</h3>
+          <div class="cc"><canvas id="c3"></canvas></div>
+        </div>
+      </div>
+
+      <div id="s-goals" class="sc">
+        <div class="cd">
+          <h3>Nouvel Objectif</h3>
+          <form id="gf" onsubmit="hg(event)">
+            <input aria-label="Titre" type="text" id="gt" name="gt" placeholder="Titre" required>
+            <select id="gty" name="gty" required>
+              <option value="orders">Commandes</option>
+              <option value="revenue">CA</option>
+              <option value="savings">Epargne</option>
+              <option value="ambassadors">Ambassadeurs</option>
+              <option value="clients">Clients</option>
+              <option value="custom">Perso</option>
+            </select>
+            <input aria-label="Objectif" type="number" id="gta" name="gta" placeholder="Objectif" required>
+            <input type="date" id="gdl" name="gdl">
+            <button type="submit" class="bm">Creer</button>
+          </form>
+        </div>
+        <div id="gl"></div>
+      </div>
+
+      <div id="s-sim" class="sc">
+        <div class="cd">
+          <h3>Simulateur</h3>
+          <form oninput="rs()">
+            <label>Ambassadeurs: <span class="rv" id="sv1">5</span></label><input type="range" id="s1" name="s1" min="0" max="100" value="5">
+            <label for="s2">Clients/jour/amb: <span class="rv" id="sv2">2</span></label><input type="range" id="s2" name="s2" min="0" max="20" value="2">
+            <label for="s3">Panier moyen: <span class="rv" id="sv3">3500</span></label><input type="range" id="s3" name="s3" min="500" max="20000" step="500" value="3500">
+            <label for="s4">Cout moyen: <span class="rv" id="sv4">1800</span></label><input type="range" id="s4" name="s4" min="100" max="15000" step="100" value="1800">
+            <label for="s5">Commission/nvx: <span class="rv" id="sv5">500</span></label><input type="range" id="s5" name="s5" min="0" max="5000" step="100" value="500">
+            <label for="s6">Jours/mois: <span class="rv" id="sv6">26</span></label><input type="range" id="s6" name="s6" min="1" max="31" value="26">
+            <label for="s7">% reinvestir: <span class="rv" id="sv7">30</span>%</label><input type="range" id="s7" name="s7" min="0" max="100" value="30">
+          </form>
+        </div>
+        <div class="sc2 sp">
+          <h3>Prudent (-20%)</h3>
+          <div class="g2">
+            <div><div class="sb">Cmd</div><div class="v" id="sp-c">0</div></div>
+            <div><div class="sb">CA</div><div class="v" id="sp-r">0</div></div>
+            <div><div class="sb">Couts</div><div class="v" id="sp-co">0</div></div>
+            <div><div class="sb">Com</div><div class="v" id="sp-cm">0</div></div>
+            <div><div class="sb">Ben av</div><div class="v" id="sp-b1">0</div></div>
+            <div><div class="sb">Ben ap</div><div class="v" id="sp-b2">0</div></div>
+          </div>
+        </div>
+        <div class="sc2 sr2">
+          <h3>Realiste</h3>
+          <div class="g2">
+            <div><div class="sb">Cmd</div><div class="v" id="sr-c">0</div></div>
+            <div><div class="sb">CA</div><div class="v" id="sr-r">0</div></div>
+            <div><div class="sb">Couts</div><div class="v" id="sr-co">0</div></div>
+            <div><div class="sb">Com</div><div class="v" id="sr-cm">0</div></div>
+            <div><div class="sb">Ben av</div><div class="v" id="sr-b1">0</div></div>
+            <div><div class="sb">Ben ap</div><div class="v" id="sr-b2">0</div></div>
+          </div>
+        </div>
+        <div class="sc2 sa">
+          <h3>Ambitieux (+20%)</h3>
+          <div class="g2">
+            <div><div class="sb">Cmd</div><div class="v" id="sa-c">0</div></div>
+            <div><div class="sb">CA</div><div class="v" id="sa-r">0</div></div>
+            <div><div class="sb">Couts</div><div class="v" id="sa-co">0</div></div>
+            <div><div class="sb">Com</div><div class="v" id="sa-cm">0</div></div>
+            <div><div class="sb">Ben av</div><div class="v" id="sa-b1">0</div></div>
+            <div><div class="sb">Ben ap</div><div class="v" id="sa-b2">0</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="s-settings" class="sc">
+        <div class="cd">
+          <h3>Configuration</h3>
+          <form onsubmit="hse(event)">
+            <label for="cfg-c">Devise</label><input type="text" id="cfg-c" name="cfg-c" value="FC">
+            <label for="cfg-co">Commission/nvx</label><input type="number" id="cfg-co" name="cfg-co" value="500">
+            <label for="cfg-r">% reinvestir</label><input type="number" id="cfg-r" name="cfg-r" value="30" min="0" max="100">
+            <label for="cfg-go">Obj cmd/mois</label><input type="number" id="cfg-go" name="cfg-go" value="500">
+            <label for="cfg-gr">Obj CA/mois</label><input type="number" id="cfg-gr" name="cfg-gr" value="1500000">
+            <label for="cfg-wa">WhatsApp (pour cmd clients)</label><input aria-label="+243..." type="tel" id="cfg-wa" name="cfg-wa" placeholder="+243...">
+            <button type="submit" class="bm">Enregistrer</button>
+          </form>
+        </div>
+        <div class="cd">
+          <h3>Lien Client</h3>
+          <p style="color:var(--t2);font-size:.85rem;margin-bottom:10px">Partagez ce lien a vos clients</p>
+          <input type="text" id="cl2" name="cl2" readonly style="margin-bottom:10px;font-size:.8rem">
+          <div id="mqri" style="display:flex;justify-content:center;margin:15px 0"></div>
+          <button class="bs" onclick="ccl()" style="width:100%">Copier lien</button>
+        </div>
+        <div class="cd">
+          <h3>Donnees</h3>
+          <button class="bw2" onclick="ldd()" style="width:100%;margin-bottom:10px">Charger demo</button>
+          <button class="be" onclick="cad()" style="width:100%">Tout effacer</button>
+        </div>
+        <div class="cd">
+          <h3>A propos</h3>
+          <p style="color:var(--t2);font-size:.85rem">
+            Dinner Burger Manager v2.0<br>
+            PWA mode client+gerant<br>
+            <span id="sws">SW: verif...</span>
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODALS -->
+  <div class="mo" id="mo" role="dialog" aria-modal="true" aria-label="Detail" onclick="if(event.target===this)cm('mo')">
+    <div class="md">
+      <div class="mh2"><h2>Detail</h2><button class="cl" aria-label="Fermer" onclick="cm('mo')">✕</button></div>
+      <div id="mc"></div>
+    </div>
+  </div>
+
+  <div class="mo" id="mos" role="dialog" aria-modal="true" aria-label="Scanner QR" onclick="if(event.target===this)cm('mos')">
+    <div class="md">
+      <div class="mh2"><h2>📷 Scanner QR</h2><button class="cl" aria-label="Fermer" onclick="cm('mos')">✕</button></div>
+      <div id="sc2-container" style="width:100%;max-width:400px;margin:0 auto;border-radius:16px;overflow:hidden;border:2px solid var(--p);min-height:300px;display:flex;align-items:center;justify-content:center;background:#000">
+        <p style="color:var(--t2)">Chargement...</p>
+      </div>
+      <p style="text-align:center;color:var(--t2);font-size:.85rem;margin-top:10px">Placez le QR dans le cadre</p>
+    </div>
+  </div>
+
+  <div class="tst" id="tst"></div>
+
+  <script src="script.js"></script>
+</body>
+</html>
