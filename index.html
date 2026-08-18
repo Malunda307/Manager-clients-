@@ -14,7 +14,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js" defer crossorigin="anonymous"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" defer crossorigin="anonymous"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js" defer crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js" defer crossorigin="anonymous"></script>
 </head>
 <body>
   <noscript>
@@ -88,13 +88,16 @@
           <input aria-label="Adresse / Numero de table" type="text" id="co-a" name="co-a" placeholder="Adresse / Numero de table">
           <textarea aria-label="Instructions (allergies, sauces...)" id="co-nt" name="co-nt" placeholder="Instructions (allergies, sauces...)"></textarea>
           <input aria-label="Code ambassadeur (optionnel)" type="text" id="co-am" name="co-am" placeholder="Code ambassadeur (optionnel)">
-          <button type="button" class="bw" onclick="swa()">💬 Commander par WhatsApp</button>
-          <button type="button" class="bq" onclick="goqr()">📷 Generer QR Code</button>
+          <label style="display:flex;align-items:flex-start;gap:8px;font-size:.8rem;color:var(--t2);cursor:pointer;text-transform:none;letter-spacing:normal">
+            <input type="checkbox" id="co-consent" name="co-consent" required style="width:auto;margin-top:3px">
+            <span>J'accepte les <a href="#" onclick="event.preventDefault();openTerms()" style="color:var(--s);text-decoration:underline">conditions d'utilisation</a> et que mes informations soient utilisees pour traiter ma commande.</span>
+          </label>
+          <button type="button" class="bq" style="width:100%" onclick="submitOrder()">✅ Envoyer ma commande</button>
         </form>
 
         <div class="qrd" id="cqr" style="display:none">
           <div id="cqri" style="display:flex;justify-content:center;padding:10px"></div>
-          <p>Montrez ce QR au caissier</p>
+          <p>Commande envoyee ! Montrez ce QR au gerant pour confirmer votre commande a la recuperation.</p>
         </div>
       </div>
 
@@ -124,57 +127,28 @@
 
           <p style="margin-bottom:14px;line-height:1.7">
             Dinner Burger fonctionne comme une dark kitchen : pas de grande salle, pas de superflu.
-            On concentre tout sur la qualite du produit et la rapidite du service, en prenant les
-            commandes directement par WhatsApp et Facebook. C'est un choix assume, pour rester
-            proche des clients tout en gardant les couts justes.
+            On concentre tout sur la qualite du produit et la rapidite du service. C'est un choix
+            assume, pour rester proche des clients tout en gardant les couts justes.
           </p>
 
           <p style="margin-bottom:4px;line-height:1.7;font-weight:700;color:var(--s)">
             "Le gout qui rassemble"
           </p>
-          <p style="line-height:1.7;color:var(--t2);font-size:.9rem">
+          <p style="margin-bottom:20px;line-height:1.7;color:var(--t2);font-size:.9rem">
             Ce n'est pas juste un slogan. C'est l'idee que derriere chaque burger, il y a une
             famille, un savoir-faire, et l'envie de faire vivre un vrai moment a chaque client —
             que ce soit a emporter, en livraison, ou sur place.
           </p>
+
+          <button type="button" class="bw" style="width:100%" onclick="contactWhatsApp()">💬 Nous contacter sur WhatsApp</button>
         </div>
       </div>
 
       <div id="cs-track" class="cs">
-        <div class="cd" id="client-session-bar" style="display:none;align-items:center;justify-content:space-between;margin-bottom:12px">
-          <span style="font-size:.85rem;color:var(--t2)">Connecte : <strong id="client-name-display"></strong></span>
-          <button class="bs bs2" onclick="clientLogout()">Deconnexion</button>
-        </div>
-
-        <div class="cd" id="client-auth-box" style="display:none">
-          <h3 style="margin-bottom:10px">Mon compte</h3>
-          <p style="color:var(--t2);font-size:.85rem;margin-bottom:12px">Connecte-toi pour retrouver l'historique de tes commandes.</p>
-          <div class="fb" id="client-auth-tabs" style="margin-bottom:12px">
-            <button class="a" data-tab="login" onclick="showClientAuthTab('login')">Connexion</button>
-            <button data-tab="signup" onclick="showClientAuthTab('signup')">Creer un compte</button>
-          </div>
-          <form id="client-login-form" onsubmit="clientLogin(event)" style="display:flex;flex-direction:column;gap:10px">
-            <input type="email" id="client-email-input" placeholder="Email" required autocomplete="username">
-            <input type="password" id="client-pass-input" placeholder="Mot de passe" required autocomplete="current-password">
-            <button type="submit" class="bm">Se connecter</button>
-          </form>
-          <form id="client-signup-form" style="display:none;flex-direction:column;gap:10px" onsubmit="clientSignup(event)">
-            <input type="text" id="client-signup-name" placeholder="Nom complet" required>
-            <input type="tel" id="client-signup-phone" placeholder="Telephone">
-            <input type="email" id="client-signup-email" placeholder="Email" required autocomplete="email">
-            <input type="password" id="client-signup-pass" placeholder="Mot de passe (6+ caracteres)" required minlength="6" autocomplete="new-password">
-            <button type="submit" class="bm">Creer mon compte</button>
-          </form>
-        </div>
-
-        <div class="cd">
-          <h3>Mes commandes</h3>
-          <div id="client-orders-empty" class="es">
-            <div class="i">📍</div>
-            <p>Aucune commande</p>
-            <p style="font-size:.8rem">Connecte-toi ou passe une commande pour la voir ici</p>
-          </div>
-          <div id="client-orders-list"></div>
+        <div class="es">
+          <div class="i">📍</div>
+          <p>Suivi des commandes</p>
+          <p style="font-size:.8rem">Bientot disponible</p>
         </div>
       </div>
     </div>
@@ -477,7 +451,7 @@
           <div class="g2">
             <div class="cd" style="background:rgba(33,150,243,0.08)"><h3>Produit Star</h3><div class="v" id="a-pp">-</div></div>
             <div class="cd" style="background:rgba(76,175,80,0.08)"><h3>Top Amb.</h3><div class="v" id="a-ta">-</div></div>
-            <div class="cd" style="background:rgba(255,152,0,0.08)"><h3>CAC</h3><div class="v" id="a-cac">-</div></div>
+            <div class="cd" style="background:rgba(255,152,0,0.08)"><h3>CA moyen / client</h3><div class="v" id="a-cac">-</div></div>
             <div class="cd" style="background:rgba(156,39,176,0.08)"><h3>Ben/Cmd</h3><div class="v" id="a-ap">-</div></div>
           </div>
         </div>
@@ -485,7 +459,7 @@
           <h3>Questions Rapides</h3>
           <div class="sr"><span>Produit le plus rentable ?</span><strong id="q1">-</strong></div>
           <div class="sr"><span>Meilleur ambassadeur ?</span><strong id="q2">-</strong></div>
-          <div class="sr"><span>Cout acquisition client ?</span><strong id="q3">-</strong></div>
+          <div class="sr"><span>CA moyen par client ?</span><strong id="q3">-</strong></div>
           <div class="sr"><span>Benefice moyen / cmd ?</span><strong id="q4">-</strong></div>
           <div class="sr"><span>Cmd restantes objectif ?</span><strong id="q5">-</strong></div>
           <div class="sr"><span>Reinvestissable ?</span><strong id="q6">-</strong></div>
@@ -589,16 +563,14 @@
         </div>
         <div class="cd">
           <h3>Donnees</h3>
-          <p style="color:var(--t2);font-size:.85rem;margin-bottom:10px">
-            Toutes les donnees sont dans Supabase (cloud). Menu, commandes, stock, clients… sont partages entre appareils.
-          </p>
-          <button class="bs" onclick="refreshAll().then(function(){t('Donnees rafraichies')})" style="width:100%;margin-bottom:10px">Rafraichir depuis le cloud</button>
+          <button class="bw2" onclick="ldd()" style="width:100%;margin-bottom:10px">Charger demo</button>
+          <button class="be" onclick="cad()" style="width:100%">Tout effacer</button>
         </div>
         <div class="cd">
           <h3>A propos</h3>
           <p style="color:var(--t2);font-size:.85rem">
-            Dinner Burger Manager v3.0<br>
-            PWA client + gerant · Supabase<br>
+            Dinner Burger Manager v2.0<br>
+            PWA mode client+gerant<br>
             <span id="sws">SW: verif...</span>
           </p>
         </div>
@@ -607,6 +579,19 @@
   </div>
 
   <!-- MODALS -->
+  <div class="mo" id="moterms" role="dialog" aria-modal="true" aria-label="Conditions d'utilisation" onclick="if(event.target===this)cm('moterms')">
+    <div class="md">
+      <div class="mh2"><h2>Conditions d'utilisation</h2><button class="cl" aria-label="Fermer" onclick="cm('moterms')">✕</button></div>
+      <div style="font-size:.85rem;color:var(--t2);line-height:1.6;max-height:55vh;overflow-y:auto">
+        <p style="margin-bottom:10px"><strong style="color:var(--t)">Donnees collectees</strong> : nom, numero de telephone, adresse (si livraison), et le contenu de votre commande.</p>
+        <p style="margin-bottom:10px"><strong style="color:var(--t)">Utilisation</strong> : ces informations servent uniquement a preparer, livrer et facturer votre commande, et a vous contacter en cas de besoin (confirmation, probleme de livraison).</p>
+        <p style="margin-bottom:10px"><strong style="color:var(--t)">Partage</strong> : vos informations sont transmises a l'equipe Dinner Burger via un service d'hebergement securise. Elles ne sont ni vendues ni partagees avec des tiers a des fins commerciales.</p>
+        <p style="margin-bottom:10px"><strong style="color:var(--t)">Conservation</strong> : vos donnees de commande sont conservees le temps necessaire au suivi de votre commande et a la gestion de la relation client.</p>
+        <p>En cochant la case d'acceptation, vous consentez a cette utilisation de vos informations dans le cadre de votre commande chez Dinner Burger.</p>
+      </div>
+    </div>
+  </div>
+
   <div class="mo" id="moadd" role="dialog" aria-modal="true" aria-label="Produit ajoute au panier" onclick="if(event.target===this)continueShoppingChoice()">
     <div class="md">
       <div class="mh2"><h2>Ajoute au panier 🛒</h2><button class="cl" aria-label="Fermer" onclick="continueShoppingChoice()">✕</button></div>
