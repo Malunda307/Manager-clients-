@@ -151,9 +151,11 @@ drop policy if exists "Users can update own profile" on profiles;
 drop policy if exists "Admin can manage profiles" on profiles;
 drop policy if exists "Insert own profile on signup" on profiles;
 drop policy if exists "Anyone can read config" on config;
+drop policy if exists "Admin can read config" on config;
 drop policy if exists "Admin can update config" on config;
 drop policy if exists "Admin can insert config" on config;
 drop policy if exists "Anyone can read products" on products;
+drop policy if exists "Admin can read products" on products;
 drop policy if exists "Admin can insert products" on products;
 drop policy if exists "Admin can update products" on products;
 drop policy if exists "Admin can delete products" on products;
@@ -167,6 +169,7 @@ drop policy if exists "Client reads own orders" on orders;
 drop policy if exists "Authenticated insert orders" on orders;
 drop policy if exists "Anon insert orders" on orders;
 drop policy if exists "Anyone can read ambassadors" on ambassadors;
+drop policy if exists "Admin can read ambassadors" on ambassadors;
 drop policy if exists "Admin insert ambassadors" on ambassadors;
 drop policy if exists "Admin update ambassadors" on ambassadors;
 drop policy if exists "Admin delete ambassadors" on ambassadors;
@@ -189,11 +192,15 @@ create policy "Admin can manage profiles" on profiles
 create policy "Insert own profile on signup" on profiles
   for insert with check (auth.uid() = id);
 
-create policy "Anyone can read config" on config for select using (true);
+-- Lecture publique via la vue public_config uniquement (voir plus bas) : la
+-- table porte les objectifs de CA et le taux de reinvestissement.
+create policy "Admin can read config" on config for select using (is_admin());
 create policy "Admin can update config" on config for update using (is_admin()) with check (is_admin());
 create policy "Admin can insert config" on config for insert with check (is_admin());
 
-create policy "Anyone can read products" on products for select using (true);
+-- Lecture publique via la vue public_products uniquement (voir plus bas) : la
+-- table porte la colonne cost, donc tes marges.
+create policy "Admin can read products" on products for select using (is_admin());
 create policy "Admin can insert products" on products for insert with check (is_admin());
 create policy "Admin can update products" on products for update using (is_admin()) with check (is_admin());
 create policy "Admin can delete products" on products for delete using (is_admin());
@@ -211,7 +218,8 @@ create policy "Client reads own orders" on orders for select using (user_id = au
 -- Les montants sont recalcules cote serveur (voir supabase-security-fix.sql).
 create policy "Client inserts own order" on orders for insert to authenticated with check (user_id = auth.uid());
 
-create policy "Anyone can read ambassadors" on ambassadors for select using (true);
+-- Commissions, montants payes et telephones : rien de public ici.
+create policy "Admin can read ambassadors" on ambassadors for select using (is_admin());
 create policy "Admin insert ambassadors" on ambassadors for insert with check (is_admin());
 create policy "Admin update ambassadors" on ambassadors for update using (is_admin()) with check (is_admin());
 create policy "Admin delete ambassadors" on ambassadors for delete using (is_admin());
@@ -280,3 +288,34 @@ from (
   union all select 'Emballages', 100, 20, 'piece', 50
 ) v
 where not exists (select 1 from stocks limit 1);
+
+
+-- ============================================================================
+-- VUES PUBLIQUES
+-- ============================================================================
+-- Le menu doit etre lisible par tout le monde pour pouvoir commander, mais sans
+-- exposer les prix d'achat ni les objectifs internes. security_invoker = off :
+-- la vue s'execute avec les droits de son proprietaire et traverse donc le RLS
+-- de la table de base.
+
+create or replace view public_products as
+  select id, name, price, category, available, emoji, photo, updated_at
+  from products;
+
+create or replace view public_config as
+  select id, currency, whatsapp
+  from config;
+
+do $$
+begin
+  execute 'alter view public_products set (security_invoker = off)';
+  execute 'alter view public_config set (security_invoker = off)';
+exception
+  when others then
+    raise notice 'security_invoker non supporte, comportement par defaut conserve';
+end $$;
+
+revoke all on public_products from anon, authenticated;
+revoke all on public_config   from anon, authenticated;
+grant select on public_products to anon, authenticated;
+grant select on public_config   to anon, authenticated;

@@ -115,7 +115,7 @@ Les clients **non connectés** peuvent toujours commander (guest) via WhatsApp o
 
 | Qui | Peut |
 |-----|------|
-| Anonyme | Lire le menu, envoyer une commande entrante (`orders_incoming`, débit limité) |
+| Anonyme | Lire le menu **sans les prix d'achat** (vue `public_products`), envoyer une commande entrante (`orders_incoming`, débit limité) |
 | Client connecté | Idem + créer **sa** fiche client, passer **ses** commandes, voir **ses** commandes |
 | Admin | Tout (menu, stock, finance, commandes, config…) |
 
@@ -139,6 +139,16 @@ Les clients **non connectés** peuvent toujours commander (guest) via WhatsApp o
   plus par le navigateur.
 - **`orders_incoming`** : payload borné à 8 Ko, 30 commandes/minute au total,
   5/minute par compte.
+- **Les données internes ne sont plus lisibles publiquement.** `products.cost`
+  (tes marges), `config` (objectifs de CA, taux de réinvestissement, commission
+  par défaut) et `ambassadors` (noms, téléphones, commissions) étaient en
+  `select using (true)` : n'importe qui pouvait les lire avec la seule clé
+  publique. Le menu reste public via deux vues, `public_products` et
+  `public_config`, qui n'exposent que le nécessaire pour commander.
+- **Échappement HTML** sur tous les champs venant de la base ou d'un QR code
+  (catégories, descriptions, notes, quantités, photos). Les identifiants insérés
+  dans un `onclick` sont filtrés et non seulement échappés : le navigateur
+  redécode `&#39;` avant de lire le JavaScript, donc échapper ne suffirait pas.
 
 ### Accès gérant hors ligne
 
@@ -154,16 +164,20 @@ de bord (chiffre d'affaires, marges, fichier clients). Désormais :
 - bloquer le CDN Supabase ne donne plus les droits gérant (le mode 100 % local
   n'est reconnu que si aucun projet Supabase n'est configuré dans `script.js`).
 
-Ces règles sont couvertes par des tests : `node tests/admin-access.test.js`.
+En cache local, les données confidentielles sont retirées quand les droits
+gérant ne sont pas établis : le menu garde son prix de vente (nécessaire hors
+ligne côté client) mais `cost` est remis à 0, et la config ne conserve que la
+devise et le numéro WhatsApp.
 
-### Reste à faire (non couvert par ce correctif)
+Ces règles sont couvertes par des tests : `node tests/admin-access.test.js`
+(29 tests, aucune dépendance).
 
-- `products.cost` est lisible publiquement (la table est en `select using (true)`) :
-  tes marges d'achat sont visibles. À déplacer derrière une vue publique sans `cost`.
-- `ambassadors` et `config` sont également en lecture publique (commissions,
-  objectifs de CA, téléphones).
-- Quelques `innerHTML` affichent encore des champs non échappés (`category`,
-  `desc`, `notes`).
+### Reste à faire (pistes)
+
+- `script.js` fait ~1850 lignes dans un seul fichier ; le découper en modules
+  faciliterait la relecture.
+- Trois dépôts proches coexistent (`Manager-clients-`, `Dinner-burger`,
+  `dinnerburgermanager`) : en garder un seul éviterait de corriger trois fois.
 
 ## Icônes PWA
 

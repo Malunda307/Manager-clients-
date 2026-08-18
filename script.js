@@ -54,13 +54,37 @@ var db = {
   goals: []
 };
 
+// Le menu et la config doivent rester en cache pour que le mode client
+// fonctionne hors ligne, mais sans les donnees confidentielles : prix d'achat
+// des produits, commission par defaut, objectifs de CA, taux de
+// reinvestissement.
+function publicProducts(list) {
+  return (list || []).map(function (p) {
+    return {
+      id: p.id, name: p.name, price: p.price, cost: 0,
+      category: p.category, available: p.available, emoji: p.emoji, photo: p.photo
+    };
+  });
+}
+function publicConfig(cfg) {
+  cfg = cfg || {};
+  // Valeurs par defaut du schema, pas les vraies valeurs du gerant : elles
+  // evitent seulement des NaN si un ecran admin est rendu par erreur.
+  return {
+    currency: cfg.currency || 'FC', whatsapp: cfg.whatsapp || '',
+    defaultCom: 500, reinvestRate: 30, goalOrders: 500, goalRevenue: 1500000
+  };
+}
 function sdb() {
   try {
-    var snapshot = { config: db.config, products: db.products };
+    var granted = adminGranted();
+    var snapshot = granted
+      ? { config: db.config, products: db.products }
+      : { config: publicConfig(db.config), products: publicProducts(db.products) };
     // Les donnees financieres ne sont persistees que si les droits gerant sont
     // etablis : sinon un simple coup d'oeil dans localStorage suffirait a lire
     // le chiffre d'affaires, les marges et le fichier clients.
-    if (adminGranted()) {
+    if (granted) {
       SENSITIVE_TABLES.forEach(function (k) { snapshot[k] = db[k]; });
     }
     localStorage.setItem(DBK, JSON.stringify(snapshot));
@@ -68,11 +92,15 @@ function sdb() {
 }
 function purgeSensitiveCache() {
   SENSITIVE_TABLES.forEach(function (k) { db[k] = []; });
+  db.products = publicProducts(db.products);
+  db.config = publicConfig(db.config);
   try {
     var r = localStorage.getItem(DBK);
     if (r) {
       var parsed = JSON.parse(r);
       SENSITIVE_TABLES.forEach(function (k) { delete parsed[k]; });
+      parsed.products = publicProducts(parsed.products);
+      parsed.config = publicConfig(parsed.config);
       localStorage.setItem(DBK, JSON.stringify(parsed));
     }
   } catch (e) {}
@@ -188,6 +216,12 @@ function escHtml(str) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
   });
 }
+// Attribut HTML classique (src, value, class...) : escHtml couvre deja les quotes.
+function escAttr(str) { return escHtml(str); }
+// Identifiant injecte dans du JS inline (onclick="f('...')"). Ici escHtml ne
+// suffit pas : le parseur HTML redecode &#39; en apostrophe AVANT que le JS soit
+// lu, donc on filtre au lieu d'echapper. Les id sont des UUID ou des slugs.
+function jsId(v) { return String(v == null ? '' : v).replace(/[^A-Za-z0-9_-]/g, ''); }
 function t(msg) {
   var el = document.getElementById('tst');
   if (!el) return;
@@ -384,7 +418,8 @@ function ensureClientRow(userId, name, phone) {
 // ===== DATA LOAD =====
 function mapProduct(r) {
   return {
-    id: r.id, name: r.name, price: Number(r.price), cost: Number(r.cost),
+    // cost est absent de la vue public_products : sans le || 0 on obtiendrait NaN
+    id: r.id, name: r.name, price: Number(r.price || 0), cost: Number(r.cost || 0),
     category: r.category, available: !!r.available, emoji: r.emoji || ge(r.category), photo: r.photo || null
   };
 }
@@ -425,15 +460,52 @@ function mapGoal(r) {
   return { id: r.id, title: r.title, type: r.type, target: Number(r.target), deadline: r.deadline || '', current: Number(r.current_val || 0) };
 }
 
+// Donnees publiques : on lit les VUES public_config / public_products, qui
+// n'exposent que ce qui est necessaire pour commander. Les prix d'achat
+// (products.cost), les objectifs de CA et les ambassadeurs restent reserves a
+// l'admin (voir loadAdminData) : les tables de base ne sont plus lisibles par
+// anon depuis supabase-security-fix.sql.
 function loadPublicData() {
   if (!canUseCloud()) return Promise.resolve();
   return Promise.all([
-    sbClient.from('config').select('*').eq('id', 1).maybeSingle(),
-    sbClient.from('products').select('*').order('name'),
-    sbClient.from('ambassadors').select('*').order('code')
+    sbClient.from('public_config').select('*').eq('id', 1).maybeSingle(),
+    sbClient.from('public_products').select('*').order('name')
   ]).then(function (results) {
     if (results[0].error || results[1].error) return;
     var cfg = results[0].data;
+    if (cfg) {
+      db.config.currency = cfg.currency || db.config.currency || 'FC';
+      db.config.whatsapp = cfg.whatsapp || '';
+    }
+    if (results[1].data) db.products = results[1].data.map(mapProduct);
+    sdb();
+  }).catch(function (e) { console.warn('loadPublicData offline/fail', e); });
+}
+
+// Donnees reservees au gerant. On y a deplace products (colonne cost),
+// config (marges et objectifs) et ambassadors (commissions, telephones).
+function loadAdminData() {
+  if (!canUseCloud() || !isAdmin) return Promise.resolve();
+  return Promise.all([
+    sbClient.from('clients').select('*').order('name'),
+    sbClient.from('orders').select('*').order('created_at', { ascending: false }).limit(500),
+    sbClient.from('stocks').select('*').order('name'),
+    sbClient.from('expenses').select('*').order('date', { ascending: false }).limit(300),
+    sbClient.from('goals').select('*').order('created_at', { ascending: false }),
+    sbClient.from('ambassadors').select('*').order('code'),
+    sbClient.from('products').select('*').order('name'),
+    sbClient.from('config').select('*').eq('id', 1).maybeSingle()
+  ]).then(function (results) {
+    if (results[0].data) db.clients = results[0].data.map(mapClient);
+    if (results[1].data) db.orders = results[1].data.map(mapOrder);
+    if (results[2].data) db.stocks = results[2].data.map(mapStock);
+    if (results[3].data) db.expenses = results[3].data.map(mapExpense);
+    if (results[4].data) db.goals = results[4].data.map(mapGoal);
+    if (results[5].data) db.ambassadors = results[5].data.map(mapAmb);
+    // Le menu complet remplace la version publique : il porte la colonne cost,
+    // indispensable pour les marges de la caisse et du tableau de bord.
+    if (results[6].data) db.products = results[6].data.map(mapProduct);
+    var cfg = results[7] && results[7].data;
     if (cfg) {
       db.config = {
         currency: cfg.currency || 'FC',
@@ -444,26 +516,6 @@ function loadPublicData() {
         whatsapp: cfg.whatsapp || ''
       };
     }
-    if (results[1].data) db.products = results[1].data.map(mapProduct);
-    if (results[2].data) db.ambassadors = results[2].data.map(mapAmb);
-    sdb();
-  }).catch(function (e) { console.warn('loadPublicData offline/fail', e); });
-}
-
-function loadAdminData() {
-  if (!canUseCloud() || !isAdmin) return Promise.resolve();
-  return Promise.all([
-    sbClient.from('clients').select('*').order('name'),
-    sbClient.from('orders').select('*').order('created_at', { ascending: false }).limit(500),
-    sbClient.from('stocks').select('*').order('name'),
-    sbClient.from('expenses').select('*').order('date', { ascending: false }).limit(300),
-    sbClient.from('goals').select('*').order('created_at', { ascending: false })
-  ]).then(function (results) {
-    if (results[0].data) db.clients = results[0].data.map(mapClient);
-    if (results[1].data) db.orders = results[1].data.map(mapOrder);
-    if (results[2].data) db.stocks = results[2].data.map(mapStock);
-    if (results[3].data) db.expenses = results[3].data.map(mapExpense);
-    if (results[4].data) db.goals = results[4].data.map(mapGoal);
     sdb();
   }).catch(function (e) { console.warn('loadAdminData offline/fail', e); });
 }
@@ -615,15 +667,22 @@ try {
   }
 } catch (e) {}
 
-var dp;
+var deferredPrompt = null;
 window.addEventListener('beforeinstallprompt', function (e) {
   e.preventDefault();
-  dp = e;
+  deferredPrompt = e;
   var b = document.getElementById('ib');
   if (b) b.style.display = 'flex';
 });
 function ip() {
-  if (dp) { dp.prompt(); dp.userChoice.then(function () { var b = document.getElementById('ib'); if (b) b.style.display = 'none'; dp = null; }); }
+  if (deferredPrompt) {
+    deferredPrompt.prompt();
+    deferredPrompt.userChoice.then(function () {
+      var b = document.getElementById('ib');
+      if (b) b.style.display = 'none';
+      deferredPrompt = null;
+    });
+  }
 }
 
 // ===== CLIENT MODE =====
@@ -663,8 +722,8 @@ function rcm() {
   g.innerHTML = prods.map(function (p) {
     var inc = ccart.find(function (c) { return c.id === p.id; });
     var q = inc ? inc.qty : 0;
-    var pic = p.photo ? '<img src="' + p.photo + '" alt="" style="width:100%;height:100%;object-fit:cover">' : (p.emoji || '🍽️');
-    return '<div class="pc"><div class="pi">' + pic + '</div><div class="pn"><div class="n">' + escHtml(p.name) + '</div><div class="d">' + escHtml(p.category) + '</div><div class="pr">' + fmt(p.price) + '</div><div class="pa"><button class="qb" onclick="ucc(\'' + p.id + '\',-1)">−</button><span class="qv">' + q + '</span><button class="qb" onclick="ucc(\'' + p.id + '\',1)">+</button></div></div></div>';
+    var pic = p.photo ? '<img src="' + escAttr(p.photo) + '" alt="" style="width:100%;height:100%;object-fit:cover">' : escHtml(p.emoji || '🍽️');
+    return '<div class="pc"><div class="pi">' + pic + '</div><div class="pn"><div class="n">' + escHtml(p.name) + '</div><div class="d">' + escHtml(p.category) + '</div><div class="pr">' + fmt(p.price) + '</div><div class="pa"><button class="qb" onclick="ucc(\'' + jsId(p.id) + '\',-1)">−</button><span class="qv">' + q + '</span><button class="qb" onclick="ucc(\'' + jsId(p.id) + '\',1)">+</button></div></div></div>';
   }).join('');
 }
 
@@ -798,7 +857,7 @@ function goqr() {
     var qimg = qri.querySelector('img'); if (qimg) qimg.alt = 'QR code de la commande';
     t('QR genere !');
   } catch (e) {
-    qri.innerHTML = '<div style="padding:20px;background:#fff;color:#000;border-radius:12px;font-family:monospace;font-size:12px;word-break:break-all;max-width:280px">' + b64 + '</div>';
+    qri.innerHTML = '<div style="padding:20px;background:#fff;color:#000;border-radius:12px;font-family:monospace;font-size:12px;word-break:break-all;max-width:280px">' + escHtml(b64) + '</div>';
     t('QR indisponible, code affiche en texte');
   }
 }
@@ -1027,7 +1086,7 @@ function aoi() {
   var c = document.getElementById('ois');
   var d = document.createElement('div'); d.className = 'oi';
   var opts = '<option value="">Choisir</option>' + db.products.filter(function (p) { return p.available; }).map(function (p) {
-    return '<option value="' + p.id + '">' + escHtml(p.name) + ' (' + fmt(p.price) + ')</option>';
+    return '<option value="' + escAttr(p.id) + '">' + escHtml(p.name) + ' (' + fmt(p.price) + ')</option>';
   }).join('');
   d.innerHTML = '<select class="op" onchange="uot()" required>' + opts + '</select><input type="number" class="oq" value="1" min="1" onchange="uot()"><button type="button" class="be bs2" onclick="roi(this)">✕</button>';
   c.appendChild(d);
@@ -1094,9 +1153,9 @@ function fillOrderFromScan(data) {
     });
     var row = document.createElement('div'); row.className = 'oi';
     var opts = '<option value="">Choisir</option>' + db.products.filter(function (p) { return p.available; }).map(function (p) {
-      return '<option value="' + p.id + '"' + (prod && prod.id === p.id ? ' selected' : '') + '>' + escHtml(p.name) + ' (' + fmt(p.price) + ')</option>';
+      return '<option value="' + escAttr(p.id) + '"' + (prod && prod.id === p.id ? ' selected' : '') + '>' + escHtml(p.name) + ' (' + fmt(p.price) + ')</option>';
     }).join('');
-    row.innerHTML = '<select class="op" onchange="uot()" required>' + opts + '</select><input type="number" class="oq" value="' + (it.qty || 1) + '" min="1" onchange="uot()"><button type="button" class="be bs2" onclick="roi(this)">✕</button>';
+    row.innerHTML = '<select class="op" onchange="uot()" required>' + opts + '</select><input type="number" class="oq" value="' + (Math.max(1, Math.min(100, parseInt(it.qty, 10) || 1))) + '" min="1" onchange="uot()"><button type="button" class="be bs2" onclick="roi(this)">✕</button>';
     container.appendChild(row);
   });
   if (container.children.length === 0) aoi();
@@ -1523,7 +1582,7 @@ function rd(period) {
   var al = document.getElementById('alerts');
   al.innerHTML = '';
   db.stocks.filter(function (s) { return s.qty <= s.min; }).forEach(function (s) {
-    al.innerHTML += '<div class="al">Stock bas: ' + escHtml(s.name) + ' (' + s.qty + ' ' + escHtml(s.unit) + ')</div>';
+    al.innerHTML += '<div class="al">Stock bas: ' + escHtml(s.name) + ' (' + escHtml(s.qty) + ' ' + escHtml(s.unit) + ')</div>';
   });
 
   var ctx = document.getElementById('c1');
@@ -1552,14 +1611,14 @@ function roc() {
   var sel = document.getElementById('oc');
   sel.innerHTML = '<option value="">-- Nouveau --</option>';
   db.clients.forEach(function (c) {
-    sel.innerHTML += '<option value="' + c.id + '">' + escHtml(c.name) + ' (' + escHtml(c.phone || '') + ')</option>';
+    sel.innerHTML += '<option value="' + escAttr(c.id) + '">' + escHtml(c.name) + ' (' + escHtml(c.phone || '') + ')</option>';
   });
 }
 function roc2() {
   var sel = document.getElementById('oa');
   sel.innerHTML = '<option value="">Aucun</option>';
   db.ambassadors.forEach(function (a) {
-    sel.innerHTML += '<option value="' + a.id + '">' + escHtml(a.code) + ' - ' + escHtml(a.name) + '</option>';
+    sel.innerHTML += '<option value="' + escAttr(a.id) + '">' + escHtml(a.code) + ' - ' + escHtml(a.name) + '</option>';
   });
 }
 function rcl(filter) {
@@ -1571,7 +1630,7 @@ function rcl(filter) {
   if (filter === 'week') list = list.filter(function (o) { return iw2(o.date); });
   list.forEach(function (o, i) {
     var prods = (o.items || []).map(function (it) { return it.name + ' x' + it.qty; }).join(', ');
-    tbody.innerHTML += '<tr><td>' + (i + 1) + '</td><td>' + String(o.date || '').split('T')[0] + '</td><td>' + escHtml(prods) + '</td><td>' + fmt(o.total) + '</td><td>' + fmt(o.profit) + '</td><td><button class="bs bs2" onclick="do2(\'' + o.id + '\')">👁</button></td></tr>';
+    tbody.innerHTML += '<tr><td>' + (i + 1) + '</td><td>' + escHtml(String(o.date || '').split('T')[0]) + '</td><td>' + escHtml(prods) + '</td><td>' + fmt(o.total) + '</td><td>' + fmt(o.profit) + '</td><td><button class="bs bs2" onclick="do2(\'' + jsId(o.id) + '\')">👁</button></td></tr>';
   });
 }
 function do2(id) {
@@ -1598,9 +1657,9 @@ function rml(filter) {
   list.forEach(function (p) {
     var st = p.available ? '<span class="bd bds">Dispo</span>' : '<span class="bd bde">Indispo</span>';
     var thumb = p.photo
-      ? '<img src="' + p.photo + '" alt="" style="width:34px;height:34px;object-fit:cover;border-radius:6px;vertical-align:middle;margin-right:6px">'
-      : '<span style="margin-right:6px">' + (p.emoji || '🍽️') + '</span>';
-    tbody.innerHTML += '<tr><td>' + thumb + escHtml(p.name) + '</td><td>' + p.category + '</td><td>' + fmt(p.price) + '</td><td>' + fmt(p.cost) + '</td><td>' + fmt(p.price - p.cost) + '</td><td>' + st + '</td><td><button class="bs bs2" onclick="ep(\'' + p.id + '\')">✎</button> <button class="be bs2" onclick="dp(\'' + p.id + '\')">✕</button></td></tr>';
+      ? '<img src="' + escAttr(p.photo) + '" alt="" style="width:34px;height:34px;object-fit:cover;border-radius:6px;vertical-align:middle;margin-right:6px">'
+      : '<span style="margin-right:6px">' + escHtml(p.emoji || '🍽️') + '</span>';
+    tbody.innerHTML += '<tr><td>' + thumb + escHtml(p.name) + '</td><td>' + escHtml(p.category) + '</td><td>' + fmt(p.price) + '</td><td>' + fmt(p.cost) + '</td><td>' + fmt(p.price - p.cost) + '</td><td>' + st + '</td><td><button class="bs bs2" onclick="ep(\'' + jsId(p.id) + '\')">✎</button> <button class="be bs2" onclick="deleteProduct(\'' + jsId(p.id) + '\')">✕</button></td></tr>';
   });
 }
 function ep(id) {
@@ -1625,7 +1684,7 @@ function ep(id) {
     document.getElementById('pphoto-remove').style.display = 'none';
   }
 }
-function dp(id) {
+function deleteProduct(id) {
   if (!requireAdmin()) return;
   if (!confirm('Supprimer ?')) return;
   db.products = db.products.filter(function (x) { return x.id !== id; });
@@ -1642,14 +1701,14 @@ function ral() {
   tbody.innerHTML = '';
   db.ambassadors.forEach(function (a) {
     var rest = a.commission - a.paid;
-    tbody.innerHTML += '<tr><td>' + escHtml(a.code) + '</td><td>' + escHtml(a.name) + '</td><td>' + a.newClients + '</td><td>' + fmt(a.revenue) + '</td><td>' + fmt(a.commission) + '</td><td>' + fmt(a.paid) + '</td><td class="' + (rest > 0 ? 'kn' : 'kp') + '">' + fmt(rest) + '</td><td><button class="be bs2" onclick="da(\'' + a.id + '\')">✕</button></td></tr>';
+    tbody.innerHTML += '<tr><td>' + escHtml(a.code) + '</td><td>' + escHtml(a.name) + '</td><td>' + escHtml(a.newClients) + '</td><td>' + fmt(a.revenue) + '</td><td>' + fmt(a.commission) + '</td><td>' + fmt(a.paid) + '</td><td class="' + (rest > 0 ? 'kn' : 'kp') + '">' + fmt(rest) + '</td><td><button class="be bs2" onclick="da(\'' + jsId(a.id) + '\')">✕</button></td></tr>';
   });
 }
 function rpa() {
   var sel = document.getElementById('pa');
   sel.innerHTML = '<option value="">Choisir</option>';
   db.ambassadors.forEach(function (a) {
-    sel.innerHTML += '<option value="' + a.id + '">' + escHtml(a.code) + ' - ' + escHtml(a.name) + ' (Reste: ' + fmt(a.commission - a.paid) + ')</option>';
+    sel.innerHTML += '<option value="' + escAttr(a.id) + '">' + escHtml(a.code) + ' - ' + escHtml(a.name) + ' (Reste: ' + fmt(a.commission - a.paid) + ')</option>';
   });
 }
 
@@ -1660,7 +1719,7 @@ function rctl(q) {
   if (q) list = list.filter(function (c) { return (c.name + ' ' + (c.phone || '')).toLowerCase().indexOf(q) >= 0; });
   list.forEach(function (c) {
     var type = c.orders === 1 ? 'Nouveau' : c.orders > 3 ? 'VIP' : 'Recurrent';
-    tbody.innerHTML += '<tr><td>' + String(c.id).substr(-4) + '</td><td>' + escHtml(c.name) + '</td><td>' + escHtml(c.phone || '') + '</td><td>' + c.orders + '</td><td>' + fmt(c.total) + '</td><td>' + (c.lastOrder ? String(c.lastOrder).split('T')[0] : '-') + '</td><td>' + type + '</td><td>' + escHtml(c.ambassador || '') + '</td></tr>';
+    tbody.innerHTML += '<tr><td>' + escHtml(String(c.id).substr(-4)) + '</td><td>' + escHtml(c.name) + '</td><td>' + escHtml(c.phone || '') + '</td><td>' + escHtml(c.orders) + '</td><td>' + fmt(c.total) + '</td><td>' + escHtml(c.lastOrder ? String(c.lastOrder).split('T')[0] : '-') + '</td><td>' + type + '</td><td>' + escHtml(c.ambassador || '') + '</td></tr>';
   });
 }
 
@@ -1669,14 +1728,14 @@ function rsl() {
   tbody.innerHTML = '';
   db.stocks.forEach(function (s) {
     var alert = s.qty <= s.min ? 'kn' : 'kp';
-    tbody.innerHTML += '<tr><td>' + escHtml(s.name) + '</td><td class="' + alert + '">' + s.qty + '</td><td>' + escHtml(s.unit) + '</td><td>' + s.min + '</td><td>' + fmt(s.cost) + '</td><td><button class="bs bs2" onclick="es2(\'' + s.id + '\')">✎</button> <button class="be bs2" onclick="ds(\'' + s.id + '\')">✕</button></td></tr>';
+    tbody.innerHTML += '<tr><td>' + escHtml(s.name) + '</td><td class="' + alert + '">' + escHtml(s.qty) + '</td><td>' + escHtml(s.unit) + '</td><td>' + escHtml(s.min) + '</td><td>' + fmt(s.cost) + '</td><td><button class="bs bs2" onclick="es2(\'' + jsId(s.id) + '\')">✎</button> <button class="be bs2" onclick="ds(\'' + jsId(s.id) + '\')">✕</button></td></tr>';
   });
 }
 function rms() {
   var sel = document.getElementById('ms');
   sel.innerHTML = '';
   db.stocks.forEach(function (s) {
-    sel.innerHTML += '<option value="' + s.id + '">' + escHtml(s.name) + ' (' + s.qty + ' ' + escHtml(s.unit) + ')</option>';
+    sel.innerHTML += '<option value="' + escAttr(s.id) + '">' + escHtml(s.name) + ' (' + escHtml(s.qty) + ' ' + escHtml(s.unit) + ')</option>';
   });
 }
 function es2(id) {
@@ -1694,7 +1753,7 @@ function re() {
   var tbody = document.getElementById('el');
   tbody.innerHTML = '';
   db.expenses.forEach(function (e) {
-    tbody.innerHTML += '<tr><td>' + e.date + '</td><td>' + e.category + '</td><td>' + fmt(e.amount) + '</td><td>' + escHtml(e.desc || '') + '</td><td><button class="be bs2" onclick="de2(\'' + e.id + '\')">✕</button></td></tr>';
+    tbody.innerHTML += '<tr><td>' + escHtml(e.date) + '</td><td>' + escHtml(e.category) + '</td><td>' + fmt(e.amount) + '</td><td>' + escHtml(e.desc || '') + '</td><td><button class="be bs2" onclick="de2(\'' + jsId(e.id) + '\')">✕</button></td></tr>';
   });
 }
 function rf() {
@@ -1789,7 +1848,7 @@ function rgl() {
     else if (g.type === 'clients') cur = db.clients.length;
     else cur = g.current || 0;
     var pct = Math.min(100, Math.round((cur / g.target) * 100)) || 0;
-    var dl = g.deadline ? ' (avant ' + g.deadline + ')' : '';
+    var dl = g.deadline ? ' (avant ' + escHtml(g.deadline) + ')' : '';
     c.innerHTML += '<div class="cd"><h3>' + escHtml(g.title) + dl + '</h3><div style="display:flex;justify-content:space-between;font-size:.9rem;margin-bottom:6px"><span>' + fmtN(cur) + ' / ' + fmtN(g.target) + '</span><span>' + pct + '%</span></div><div class="pb"><div class="pf" style="width:' + pct + '%"></div></div></div>';
   });
 }
@@ -1809,7 +1868,7 @@ function rse() {
     new QRCode(qri, { text: url, width: 180, height: 180, colorDark: "#000000", colorLight: "#ffffff" });
     var qimg2 = qri.querySelector('img'); if (qimg2) qimg2.alt = 'QR code du lien client';
   } catch (e) {
-    qri.innerHTML = '<p style="font-size:.75rem;color:var(--t2);word-break:break-all">' + url + '</p>';
+    qri.innerHTML = '<p style="font-size:.75rem;color:var(--t2);word-break:break-all">' + escHtml(url) + '</p>';
   }
 }
 

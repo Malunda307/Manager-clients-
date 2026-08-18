@@ -326,7 +326,70 @@ create policy "Admin delete incoming" on orders_incoming
 
 
 -- ============================================================================
--- 5) VERIFICATION
+-- 5) FUITES EN LECTURE : marges, objectifs, commissions
+-- ============================================================================
+-- Avant : products, config et ambassadors etaient en "select using (true)".
+-- N'importe qui pouvait donc lire, avec la seule cle anon publique :
+--   * products.cost         -> tes prix d'achat et donc tes marges
+--   * config                -> objectifs de CA, taux de reinvestissement,
+--                              commission par defaut
+--   * ambassadors           -> noms, telephones, commissions, montants payes
+--
+-- On garde le menu public (il DOIT etre lisible pour commander) mais via des
+-- vues qui n'exposent que les colonnes necessaires. Les tables de base
+-- redeviennent reservees a l'admin.
+--
+-- security_invoker = off : la vue est evaluee avec les droits de son
+-- proprietaire, donc elle traverse le RLS de la table de base. C'est
+-- volontaire, et c'est ce qui permet de garder le menu public tout en fermant
+-- la table products.
+
+create or replace view public_products as
+  select id, name, price, category, available, emoji, photo, updated_at
+  from products;
+
+create or replace view public_config as
+  select id, currency, whatsapp
+  from config;
+
+do $$
+begin
+  execute 'alter view public_products set (security_invoker = off)';
+  execute 'alter view public_config set (security_invoker = off)';
+exception
+  when others then
+    -- Anciennes versions de PostgreSQL : l'option n'existe pas et le
+    -- comportement par defaut est deja celui des droits du proprietaire.
+    raise notice 'security_invoker non supporte, comportement par defaut conserve';
+end $$;
+
+revoke all on public_products from anon, authenticated;
+revoke all on public_config   from anon, authenticated;
+grant select on public_products to anon, authenticated;
+grant select on public_config   to anon, authenticated;
+
+-- Les tables de base ne sont plus lisibles que par l'admin.
+drop policy if exists "Anyone can read products" on products;
+drop policy if exists "Admin can read products" on products;
+create policy "Admin can read products" on products
+  for select using (is_admin());
+
+drop policy if exists "Anyone can read config" on config;
+drop policy if exists "Admin can read config" on config;
+create policy "Admin can read config" on config
+  for select using (is_admin());
+
+drop policy if exists "Anyone can read ambassadors" on ambassadors;
+drop policy if exists "Admin can read ambassadors" on ambassadors;
+create policy "Admin can read ambassadors" on ambassadors
+  for select using (is_admin());
+
+-- Les triggers d'integrite des commandes (enforce_order_integrity) sont en
+-- security definer : ils continuent de lire products malgre cette politique.
+
+
+-- ============================================================================
+-- 6) VERIFICATION
 -- ============================================================================
 -- Doit retourner 0 ligne : plus aucune politique d'insertion ouverte a anon
 -- sur orders / clients.
@@ -341,4 +404,12 @@ create policy "Admin delete incoming" on orders_incoming
 -- Test d'elevation de privileges (doit laisser role = 'client') :
 --
 --   select id, role from profiles order by created_at desc limit 5;
+--
+-- Les marges ne doivent plus fuiter. Depuis le SQL Editor :
+--
+--   set role anon;
+--   select * from products;          -- doit echouer / retourner 0 ligne
+--   select * from public_products;   -- doit retourner le menu, sans "cost"
+--   select * from ambassadors;       -- doit retourner 0 ligne
+--   reset role;
 -- ============================================================================
