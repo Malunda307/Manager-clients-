@@ -14,6 +14,8 @@ Les clients peuvent créer un compte pour retrouver l’historique de leurs comm
 | `sw.js` | Service worker (hors ligne) |
 | `manifest.json` | Métadonnées PWA |
 | `supabase-schema.sql` | Schéma SQL à exécuter une fois |
+| `supabase-security-fix.sql` | **Correctif de sécurité RLS — à exécuter juste après le schéma** |
+| `tests/admin-access.test.js` | Tests du contrôle d'accès gérant (`node tests/admin-access.test.js`) |
 | `icon-192.png` / `icon-512.png` | Icônes (à ajouter) |
 
 ## 1. Créer le projet Supabase
@@ -29,6 +31,16 @@ Les clients peuvent créer un compte pour retrouver l’historique de leurs comm
 3. Clique **Run**.
 
 Cela crée les tables, les politiques de sécurité (RLS), le menu de départ et le stock initial.
+
+### 2 bis. Exécuter le correctif de sécurité (obligatoire)
+
+1. **SQL Editor** → **New query**.
+2. Colle **tout le contenu** de `supabase-security-fix.sql`.
+3. Clique **Run**.
+
+Ce fichier ajoute les triggers qui empêchent l'élévation de privilèges, recalculent
+les montants côté serveur et limitent le flood. Il est idempotent : tu peux le
+relancer sans risque, y compris sur une base déjà en production.
 
 ## 3. Activer le temps réel
 
@@ -103,13 +115,55 @@ Les clients **non connectés** peuvent toujours commander (guest) via WhatsApp o
 
 | Qui | Peut |
 |-----|------|
-| Anonyme | Lire le menu, créer une commande entrante, créer une fiche client |
-| Client connecté | Idem + voir ses propres commandes |
+| Anonyme | Lire le menu, envoyer une commande entrante (`orders_incoming`, débit limité) |
+| Client connecté | Idem + créer **sa** fiche client, passer **ses** commandes, voir **ses** commandes |
 | Admin | Tout (menu, stock, finance, commandes, config…) |
 
 - La clé `anon` est publique par design — c’est normal.
 - Ce qui protège les données, ce sont les **politiques RLS** du SQL.
 - Ne mets **jamais** la clé `service_role` dans le front.
+
+### Règles appliquées côté serveur
+
+- **Le rôle n'est jamais fourni par le navigateur.** À l'inscription il est forcé à
+  `client`, et un trigger empêche un utilisateur de modifier son propre `role`.
+  Seul un admin existant (ou le SQL Editor) peut promouvoir quelqu'un.
+- **`anon` n'écrit plus dans `orders` ni `clients`.** Les commandes des visiteurs
+  non connectés passent uniquement par `orders_incoming`.
+- **Un client ne peut écrire que pour lui-même** (`user_id = auth.uid()`), et sa
+  commande est automatiquement rattachée à sa propre fiche client.
+- **`total`, `cost` et `profit` sont recalculés depuis la table `products`** pour
+  toute commande client : impossible de commander à 0 FC ou de fausser les marges.
+  Le gérant garde la saisie libre en caisse (remise, prix négocié).
+- **`orders_count` / `total` de la fiche client** sont mis à jour par le serveur,
+  plus par le navigateur.
+- **`orders_incoming`** : payload borné à 8 Ko, 30 commandes/minute au total,
+  5/minute par compte.
+
+### Accès gérant hors ligne
+
+L'ancienne version accordait les droits gérant dès qu'une clé `localStorage`
+existait : n'importe qui pouvait la créer depuis la console et ouvrir le tableau
+de bord (chiffre d'affaires, marges, fichier clients). Désormais :
+
+- les droits hors ligne exigent une **session Supabase présente sur l'appareil**
+  (JWT signé par le serveur) dont l'utilisateur correspond au cache admin ;
+- ce cache **expire au bout de 7 jours** sans reconnexion ;
+- les données financières ne sont **mises en cache que si ces droits sont établis**,
+  et sont **purgées** à la déconnexion ou si la vérification échoue ;
+- bloquer le CDN Supabase ne donne plus les droits gérant (le mode 100 % local
+  n'est reconnu que si aucun projet Supabase n'est configuré dans `script.js`).
+
+Ces règles sont couvertes par des tests : `node tests/admin-access.test.js`.
+
+### Reste à faire (non couvert par ce correctif)
+
+- `products.cost` est lisible publiquement (la table est en `select using (true)`) :
+  tes marges d'achat sont visibles. À déplacer derrière une vue publique sans `cost`.
+- `ambassadors` et `config` sont également en lecture publique (commissions,
+  objectifs de CA, téléphones).
+- Quelques `innerHTML` affichent encore des champs non échappés (`category`,
+  `desc`, `notes`).
 
 ## Icônes PWA
 

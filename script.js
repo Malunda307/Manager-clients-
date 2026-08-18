@@ -15,19 +15,34 @@ var currentUser = null;   // session.user
 var currentProfile = null; // { id, role, name, phone }
 var isAdmin = false;
 
+// cloudConfigured : le projet Supabase EST renseigne dans ce fichier.
+// On distingue ce cas de "la librairie n'a pas pu se charger", sinon il suffirait
+// de bloquer le CDN pour retomber en mode local et obtenir les droits gerant.
+var cloudConfigured = /^https:\/\/[a-z0-9-]+\.supabase\.(co|in)$/i.test(supabaseConfig.url || '');
+var localOnly = !cloudConfigured; // vraie app locale, sans comptes : acces gere par l'appareil
+var cloudUnavailable = false;     // configure mais librairie absente : aucun droit gerant
+
 try {
-  if (supabaseConfig.url !== "REMPLACE_MOI" && typeof supabase !== 'undefined') {
+  if (cloudConfigured && typeof supabase !== 'undefined') {
     sbClient = supabase.createClient(supabaseConfig.url, supabaseConfig.anonKey);
     sbReady = true;
+  } else if (cloudConfigured) {
+    cloudUnavailable = true;
   }
-} catch (e) { console.warn('Supabase non configure', e); }
+} catch (e) { cloudUnavailable = cloudConfigured; console.warn('Supabase non configure', e); }
 
 // ===== CACHE LOCAL + CLOUD (offline-first) =====
 // localStorage = source de vérité locale (marche hors ligne)
 // Supabase = synchro quand le réseau est dispo
 var DBK = 'dbm_v3';
-var ADMIN_CACHE_KEY = 'dbm_admin_cache';
-var offlineAdmin = false; // true si une session admin a déjà été validée sur cet appareil
+var ADMIN_CACHE_KEY = 'dbm_admin_v2';
+var LEGACY_ADMIN_CACHE_KEY = 'dbm_admin_cache'; // ancien marqueur, non fiable : on le supprime
+var OFFLINE_ADMIN_MAX_AGE = 7 * 24 * 60 * 60 * 1000; // 7 jours sans re-verification en ligne
+// offlineAdmin n'est JAMAIS accorde par la simple presence d'une cle localStorage :
+// il faut une session Supabase locale (JWT signe) dont l'utilisateur correspond au cache.
+var offlineAdmin = false;
+// Tables reservees au gerant : jamais mises en cache sans droits gerant valides.
+var SENSITIVE_TABLES = ['clients', 'orders', 'expenses', 'goals', 'stocks', 'ambassadors'];
 var db = {
   config: { currency: "FC", defaultCom: 500, reinvestRate: 30, goalOrders: 500, goalRevenue: 1500000, whatsapp: '' },
   products: [],
@@ -40,7 +55,27 @@ var db = {
 };
 
 function sdb() {
-  try { localStorage.setItem(DBK, JSON.stringify(db)); } catch (e) { console.warn('localStorage plein', e); }
+  try {
+    var snapshot = { config: db.config, products: db.products };
+    // Les donnees financieres ne sont persistees que si les droits gerant sont
+    // etablis : sinon un simple coup d'oeil dans localStorage suffirait a lire
+    // le chiffre d'affaires, les marges et le fichier clients.
+    if (adminGranted()) {
+      SENSITIVE_TABLES.forEach(function (k) { snapshot[k] = db[k]; });
+    }
+    localStorage.setItem(DBK, JSON.stringify(snapshot));
+  } catch (e) { console.warn('localStorage plein', e); }
+}
+function purgeSensitiveCache() {
+  SENSITIVE_TABLES.forEach(function (k) { db[k] = []; });
+  try {
+    var r = localStorage.getItem(DBK);
+    if (r) {
+      var parsed = JSON.parse(r);
+      SENSITIVE_TABLES.forEach(function (k) { delete parsed[k]; });
+      localStorage.setItem(DBK, JSON.stringify(parsed));
+    }
+  } catch (e) {}
 }
 function ldb() {
   try {
@@ -84,20 +119,51 @@ function seedIfEmpty() {
 }
 function isOnline() { return typeof navigator !== 'undefined' ? navigator.onLine !== false : true; }
 function canUseCloud() { return sbReady && isOnline(); }
-function rememberAdmin(email) {
+function adminGranted() {
+  // localOnly : pas de Supabase configure du tout, donc pas de comptes.
+  // L'acces est alors gere au niveau de l'appareil, comme une caisse locale.
+  return isAdmin || offlineAdmin || localOnly;
+}
+function rememberAdmin(user) {
+  if (!user || !user.id) return;
   offlineAdmin = true;
-  try { localStorage.setItem(ADMIN_CACHE_KEY, JSON.stringify({ email: email || '', at: Date.now() })); } catch (e) {}
+  try {
+    localStorage.setItem(ADMIN_CACHE_KEY, JSON.stringify({
+      userId: user.id, email: user.email || '', at: Date.now()
+    }));
+  } catch (e) {}
 }
 function forgetAdmin() {
   offlineAdmin = false;
-  try { localStorage.removeItem(ADMIN_CACHE_KEY); } catch (e) {}
-}
-function restoreAdminCache() {
   try {
-    var r = localStorage.getItem(ADMIN_CACHE_KEY);
-    if (r) { offlineAdmin = true; return JSON.parse(r); }
+    localStorage.removeItem(ADMIN_CACHE_KEY);
+    localStorage.removeItem(LEGACY_ADMIN_CACHE_KEY);
   } catch (e) {}
-  return null;
+}
+function readAdminCache() {
+  try { return JSON.parse(localStorage.getItem(ADMIN_CACHE_KEY) || 'null'); } catch (e) { return null; }
+}
+// Accorde les droits gerant hors ligne SEULEMENT si :
+//   - un cache admin existe et a moins de 7 jours,
+//   - une session Supabase est presente localement (JWT signe par le serveur),
+//   - et cette session appartient bien a l'utilisateur mis en cache.
+// Forger cet acces demanderait un JWT valide, donc la cle secrete du projet.
+function verifyOfflineAdmin() {
+  offlineAdmin = false;
+  try { localStorage.removeItem(LEGACY_ADMIN_CACHE_KEY); } catch (e) {}
+  var cached = readAdminCache();
+  if (!cached || !cached.userId || !cached.at) return Promise.resolve(false);
+  if (Date.now() - Number(cached.at) > OFFLINE_ADMIN_MAX_AGE) {
+    forgetAdmin();
+    return Promise.resolve(false);
+  }
+  if (!sbReady) return Promise.resolve(false);
+  return sbClient.auth.getSession().then(function (res) {
+    var s = res && res.data && res.data.session;
+    if (!s || !s.user || s.user.id !== cached.userId) { forgetAdmin(); return false; }
+    offlineAdmin = true;
+    return true;
+  }).catch(function () { return false; });
 }
 
 // ===== UTILS =====
@@ -134,9 +200,9 @@ function requireSb() {
   return sbReady && isOnline();
 }
 function requireAdmin() {
-  // Online : session admin Supabase
-  // Offline : autorise si cet appareil a déjà été connecté en admin
-  if (isAdmin || offlineAdmin) return true;
+  // Online  : session admin Supabase verifiee (profiles.role = 'admin')
+  // Offline : session admin locale valide (JWT) de moins de 7 jours
+  if (adminGranted()) return true;
   t('Connexion admin requise (ou réseau pour se connecter)');
   return false;
 }
@@ -155,20 +221,29 @@ function applySession(session) {
   if (!currentUser) {
     currentProfile = null;
     isAdmin = false;
-    // garde offlineAdmin pour pouvoir travailler hors ligne
+    // Plus de session = plus de droits gerant, et le cache sensible est vide.
+    forgetAdmin();
+    purgeSensitiveCache();
     updateAuthUI();
     return Promise.resolve();
   }
   return loadProfile(currentUser.id).then(function (p) {
     currentProfile = p;
     isAdmin = !!(p && p.role === 'admin');
-    if (isAdmin) rememberAdmin(currentUser.email);
+    if (isAdmin) {
+      rememberAdmin(currentUser);
+    } else {
+      forgetAdmin();
+      purgeSensitiveCache();
+    }
     updateAuthUI();
   }).catch(function () {
-    // profil injoignable : si cache admin local, on reste opérationnel
-    var cached = restoreAdminCache();
-    if (cached) offlineAdmin = true;
-    updateAuthUI();
+    // Profil injoignable (hors ligne) : on retombe sur la verification locale,
+    // qui exige une session valide correspondant au cache admin.
+    return verifyOfflineAdmin().then(function (ok) {
+      if (!ok) purgeSensitiveCache();
+      updateAuthUI();
+    });
   });
 }
 
@@ -177,14 +252,16 @@ function updateAuthUI() {
   var login = document.getElementById('incoming-login');
   var bar = document.getElementById('admin-session-bar');
   if (!icm) {
-    if (isAdmin) {
+    if (adminGranted() && !localOnly) {
       if (login) login.style.display = 'none';
       if (bar) {
         bar.style.display = 'flex';
         var em = document.getElementById('admin-email');
-        if (em) em.innerText = currentUser.email;
+        var cached = readAdminCache();
+        var label = (currentUser && currentUser.email) || (cached && cached.email) || 'Admin';
+        if (em) em.innerText = label + (isAdmin ? '' : ' · hors ligne');
       }
-      startIncomingOrdersFeed();
+      if (isAdmin) startIncomingOrdersFeed();
     } else {
       if (bar) bar.style.display = 'none';
       if (login) login.style.display = 'block';
@@ -228,7 +305,13 @@ function adminLogin(e) {
 }
 
 function adminLogout() {
+  // On coupe les droits localement AVANT l'appel reseau : si signOut echoue
+  // (hors ligne), l'appareil ne doit pas rester gerant.
+  isAdmin = false;
+  forgetAdmin();
+  purgeSensitiveCache();
   if (sbReady) sbClient.auth.signOut();
+  updateAuthUI();
 }
 
 function clientLogin(e) {
@@ -251,10 +334,12 @@ function clientSignup(e) {
   var pass = document.getElementById('client-signup-pass').value;
   if (!name || !email || !pass) { t('Nom, email et mot de passe requis'); return; }
   if (pass.length < 6) { t('Mot de passe : 6 caracteres min.'); return; }
+  // Aucun 'role' n'est envoye ici : le serveur force 'client' de toute facon
+  // (voir handle_new_user dans supabase-security-fix.sql).
   sbClient.auth.signUp({
     email: email,
     password: pass,
-    options: { data: { name: name, role: 'client' } }
+    options: { data: { name: name } }
   }).then(function (res) {
     if (res.error) { t('Inscription echouee : ' + res.error.message); return; }
     // Mettre à jour le profil avec le téléphone
@@ -268,6 +353,9 @@ function clientSignup(e) {
 }
 
 function clientLogout() {
+  isAdmin = false;
+  forgetAdmin();
+  purgeSensitiveCache();
   if (sbReady) sbClient.auth.signOut();
 }
 
@@ -410,14 +498,14 @@ function refreshAll() {
     if (icm) {
       rcm();
       if (currentUser) loadClientOrders();
-    } else if (isAdmin || offlineAdmin) {
+    } else if (adminGranted()) {
       var active = document.querySelector('.sc.a');
       var id = active ? active.id.replace('s-', '') : 'dash';
       sp(id);
     }
   }).catch(function () {
     if (icm) rcm();
-    else if (isAdmin || offlineAdmin) sp('dash');
+    else if (adminGranted()) sp('dash');
   });
 }
 
@@ -717,32 +805,21 @@ function goqr() {
 
 function saveClientOrderHistory(data) {
   if (!sbReady || !currentUser) return;
-  var tot = data.total || 0;
-  var cst = (data.items || []).reduce(function (s, i) { return s + (i.cost || 0) * (i.qty || 1); }, 0);
+  // On n'envoie plus total / cost / profit / status : le serveur les recalcule
+  // depuis la table products (trigger enforce_order_integrity). Les compteurs
+  // de la fiche client sont eux aussi mis a jour cote serveur.
   ensureClientRow(currentUser.id, data.name, data.phone).then(function (client) {
     sbClient.from('orders').insert([{
       client_id: client ? client.id : null,
       client_name: data.name,
       user_id: currentUser.id,
-      items: data.items,
-      total: tot,
-      cost: cst,
-      profit: tot - cst,
-      payment: 'pending',
+      items: (data.items || []).map(function (i) { return { id: i.id, name: i.name, qty: i.qty }; }),
       ambassador: data.ambassadorCode || '',
       order_type: data.orderType,
       address: data.address,
-      notes: data.notes,
-      status: 'en_attente',
-      is_new_client: false
-    }]).then(function () {
-      if (client) {
-        sbClient.from('clients').update({
-          orders_count: (client.orders_count || 0) + 1,
-          total: Number(client.total || 0) + tot,
-          last_order: new Date().toISOString()
-        }).eq('id', client.id).then(function () {});
-      }
+      notes: data.notes
+    }]).then(function (res) {
+      if (res && res.error) { console.error('Enregistrement commande echoue', res.error); return; }
       loadClientOrders();
     });
   });
@@ -1740,7 +1817,6 @@ function rse() {
 document.addEventListener('DOMContentLoaded', function () {
   // 1) Charger le cache local immédiatement (marche sans réseau)
   var hadLocal = ldb();
-  restoreAdminCache();
   if (!hadLocal) seedIfEmpty();
 
   if (icm) {
@@ -1748,31 +1824,35 @@ document.addEventListener('DOMContentLoaded', function () {
     scp('menu');
   } else {
     document.getElementById('mm').style.display = 'block';
-    // si admin déjà connu hors ligne, UI admin utile tout de suite
-    if (offlineAdmin) {
-      var bar = document.getElementById('admin-session-bar');
-      var login = document.getElementById('incoming-login');
-      if (login) login.style.display = 'none';
-      if (bar) {
-        bar.style.display = 'flex';
-        var em = document.getElementById('admin-email');
-        try {
-          var c = JSON.parse(localStorage.getItem(ADMIN_CACHE_KEY) || '{}');
-          if (em) em.innerText = (c.email || 'Admin (hors ligne)') + (isOnline() ? '' : ' · offline');
-        } catch (e) { if (em) em.innerText = 'Admin (hors ligne)'; }
-      }
-    }
+    // Les droits gerant ne sont PAS accordes ici : on attend la verification
+    // de la session locale (verifyOfflineAdmin) avant d'afficher quoi que ce soit.
+    updateAuthUI();
     sp('dash');
   }
 
   // 2) Puis tenter le cloud si dispo
   if (!sbReady) {
+    var msg = cloudUnavailable
+      ? 'Connexion au serveur impossible (librairie non chargee). Reessaie avec une connexion internet : les donnees du gerant restent verrouillees.'
+      : 'Mode local uniquement (Supabase non configure). Les donnees restent sur cet appareil.';
     document.body.insertAdjacentHTML('afterbegin',
       '<div style="background:#ff9800;color:#000;padding:10px 14px;text-align:center;font-size:.85rem;position:sticky;top:0;z-index:300">' +
-      'Mode local uniquement (Supabase non configure). Les donnees restent sur cet appareil.</div>'
+      escHtml(msg) + '</div>'
     );
+    if (!localOnly) {
+      // Configure mais injoignable : aucun droit gerant, et rien de sensible
+      // ne reste en cache sur l'appareil.
+      purgeSensitiveCache();
+      if (!icm) { updateAuthUI(); sp('dash'); }
+    }
     return;
   }
+
+  // 3) Verifier les droits gerant hors ligne (session locale + cache < 7 jours)
+  verifyOfflineAdmin().then(function (ok) {
+    if (!ok && !localOnly) purgeSensitiveCache();
+    if (!icm) { updateAuthUI(); sp('dash'); }
+  });
 
   function tryCloudSync() {
     if (!isOnline()) return;

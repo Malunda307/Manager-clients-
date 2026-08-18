@@ -1,4 +1,8 @@
 -- Dinner Burger schema - coller TOUT puis Run
+--
+-- IMPORTANT : execute ENSUITE `supabase-security-fix.sql`, qui ajoute les
+-- triggers de securite (integrite des commandes, protection du role admin,
+-- anti-flood). Ce fichier-ci ne cree que les tables et les politiques RLS.
 
 create extension if not exists pgcrypto;
 
@@ -170,6 +174,9 @@ drop policy if exists "Admin stocks" on stocks;
 drop policy if exists "Admin expenses" on expenses;
 drop policy if exists "Admin goals" on goals;
 drop policy if exists "Anyone can insert incoming" on orders_incoming;
+drop policy if exists "Admin delete incoming" on orders_incoming;
+drop policy if exists "Client inserts own row" on clients;
+drop policy if exists "Client inserts own order" on orders;
 drop policy if exists "Admin read incoming" on orders_incoming;
 drop policy if exists "Admin update incoming" on orders_incoming;
 
@@ -194,13 +201,15 @@ create policy "Admin can delete products" on products for delete using (is_admin
 create policy "Admin full clients" on clients for all using (is_admin()) with check (is_admin());
 create policy "Client reads own row" on clients for select using (user_id = auth.uid());
 create policy "Client updates own row" on clients for update using (user_id = auth.uid()) with check (user_id = auth.uid());
-create policy "Authenticated can insert client" on clients for insert to authenticated with check (true);
-create policy "Anon can insert client" on clients for insert to anon with check (true);
+-- Un client authentifie ne peut creer QUE sa propre fiche.
+-- (anon n'insere plus rien ici : les commandes anonymes passent par orders_incoming)
+create policy "Client inserts own row" on clients for insert to authenticated with check (user_id = auth.uid());
 
 create policy "Admin full orders" on orders for all using (is_admin()) with check (is_admin());
 create policy "Client reads own orders" on orders for select using (user_id = auth.uid());
-create policy "Authenticated insert orders" on orders for insert to authenticated with check (true);
-create policy "Anon insert orders" on orders for insert to anon with check (true);
+-- Un client authentifie ne peut inserer qu'une commande qui lui appartient.
+-- Les montants sont recalcules cote serveur (voir supabase-security-fix.sql).
+create policy "Client inserts own order" on orders for insert to authenticated with check (user_id = auth.uid());
 
 create policy "Anyone can read ambassadors" on ambassadors for select using (true);
 create policy "Admin insert ambassadors" on ambassadors for insert with check (is_admin());
@@ -211,7 +220,13 @@ create policy "Admin stocks" on stocks for all using (is_admin()) with check (is
 create policy "Admin expenses" on expenses for all using (is_admin()) with check (is_admin());
 create policy "Admin goals" on goals for all using (is_admin()) with check (is_admin());
 
-create policy "Anyone can insert incoming" on orders_incoming for insert with check (true);
+create policy "Anyone can insert incoming" on orders_incoming for insert with check (
+  (user_id is null or user_id = auth.uid())
+  and jsonb_typeof(payload) = 'object'
+  and pg_column_size(payload) < 8192
+  and status = 'nouvelle'
+);
+create policy "Admin delete incoming" on orders_incoming for delete using (is_admin());
 create policy "Admin read incoming" on orders_incoming for select using (is_admin());
 create policy "Admin update incoming" on orders_incoming for update using (is_admin()) with check (is_admin());
 
@@ -222,10 +237,12 @@ security definer
 set search_path = public
 as $fn$
 begin
+  -- Le role n'est JAMAIS lu depuis raw_user_meta_data : cette donnee est
+  -- envoyee par le navigateur, donc un client pourrait s'inscrire admin.
   insert into public.profiles (id, role, name)
   values (
     new.id,
-    coalesce(new.raw_user_meta_data->>'role', 'client'),
+    'client',
     coalesce(new.raw_user_meta_data->>'name', split_part(new.email, '@', 1))
   )
   on conflict (id) do nothing;
