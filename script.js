@@ -15,19 +15,34 @@ var currentUser = null;   // session.user
 var currentProfile = null; // { id, role, name, phone }
 var isAdmin = false;
 
+// cloudConfigured : le projet Supabase EST renseigne dans ce fichier.
+// On distingue ce cas de "la librairie n'a pas pu se charger", sinon il suffirait
+// de bloquer le CDN pour retomber en mode local et obtenir les droits gerant.
+var cloudConfigured = /^https:\/\/[a-z0-9-]+\.supabase\.(co|in)$/i.test(supabaseConfig.url || '');
+var localOnly = !cloudConfigured; // vraie app locale, sans comptes : acces gere par l'appareil
+var cloudUnavailable = false;     // configure mais librairie absente : aucun droit gerant
+
 try {
-  if (supabaseConfig.url !== "REMPLACE_MOI" && typeof supabase !== 'undefined') {
+  if (cloudConfigured && typeof supabase !== 'undefined') {
     sbClient = supabase.createClient(supabaseConfig.url, supabaseConfig.anonKey);
     sbReady = true;
+  } else if (cloudConfigured) {
+    cloudUnavailable = true;
   }
-} catch (e) { console.warn('Supabase non configure', e); }
+} catch (e) { cloudUnavailable = cloudConfigured; console.warn('Supabase non configure', e); }
 
 // ===== CACHE LOCAL + CLOUD (offline-first) =====
 // localStorage = source de vérité locale (marche hors ligne)
 // Supabase = synchro quand le réseau est dispo
 var DBK = 'dbm_v3';
-var ADMIN_CACHE_KEY = 'dbm_admin_cache';
-var offlineAdmin = false; // true si une session admin a déjà été validée sur cet appareil
+var ADMIN_CACHE_KEY = 'dbm_admin_v2';
+var LEGACY_ADMIN_CACHE_KEY = 'dbm_admin_cache'; // ancien marqueur, non fiable : on le supprime
+var OFFLINE_ADMIN_MAX_AGE = 7 * 24 * 60 * 60 * 1000; // 7 jours sans re-verification en ligne
+// offlineAdmin n'est JAMAIS accorde par la simple presence d'une cle localStorage :
+// il faut une session Supabase locale (JWT signe) dont l'utilisateur correspond au cache.
+var offlineAdmin = false;
+// Tables reservees au gerant : jamais mises en cache sans droits gerant valides.
+var SENSITIVE_TABLES = ['clients', 'orders', 'expenses', 'goals', 'stocks', 'ambassadors'];
 var db = {
   config: { currency: "FC", defaultCom: 500, reinvestRate: 30, goalOrders: 500, goalRevenue: 1500000, whatsapp: '' },
   products: [],
@@ -39,8 +54,56 @@ var db = {
   goals: []
 };
 
+// Le menu et la config doivent rester en cache pour que le mode client
+// fonctionne hors ligne, mais sans les donnees confidentielles : prix d'achat
+// des produits, commission par defaut, objectifs de CA, taux de
+// reinvestissement.
+function publicProducts(list) {
+  return (list || []).map(function (p) {
+    return {
+      id: p.id, name: p.name, price: p.price, cost: 0,
+      category: p.category, available: p.available, emoji: p.emoji, photo: p.photo
+    };
+  });
+}
+function publicConfig(cfg) {
+  cfg = cfg || {};
+  // Valeurs par defaut du schema, pas les vraies valeurs du gerant : elles
+  // evitent seulement des NaN si un ecran admin est rendu par erreur.
+  return {
+    currency: cfg.currency || 'FC', whatsapp: cfg.whatsapp || '',
+    defaultCom: 500, reinvestRate: 30, goalOrders: 500, goalRevenue: 1500000
+  };
+}
 function sdb() {
-  try { localStorage.setItem(DBK, JSON.stringify(db)); } catch (e) { console.warn('localStorage plein', e); }
+  try {
+    var granted = adminGranted();
+    var snapshot = granted
+      ? { config: db.config, products: db.products }
+      : { config: publicConfig(db.config), products: publicProducts(db.products) };
+    // Les donnees financieres ne sont persistees que si les droits gerant sont
+    // etablis : sinon un simple coup d'oeil dans localStorage suffirait a lire
+    // le chiffre d'affaires, les marges et le fichier clients.
+    if (granted) {
+      SENSITIVE_TABLES.forEach(function (k) { snapshot[k] = db[k]; });
+    }
+    localStorage.setItem(DBK, JSON.stringify(snapshot));
+  } catch (e) { console.warn('localStorage plein', e); }
+}
+function purgeSensitiveCache() {
+  SENSITIVE_TABLES.forEach(function (k) { db[k] = []; });
+  db.products = publicProducts(db.products);
+  db.config = publicConfig(db.config);
+  try {
+    var r = localStorage.getItem(DBK);
+    if (r) {
+      var parsed = JSON.parse(r);
+      SENSITIVE_TABLES.forEach(function (k) { delete parsed[k]; });
+      parsed.products = publicProducts(parsed.products);
+      parsed.config = publicConfig(parsed.config);
+      localStorage.setItem(DBK, JSON.stringify(parsed));
+    }
+  } catch (e) {}
 }
 function ldb() {
   try {
@@ -84,20 +147,51 @@ function seedIfEmpty() {
 }
 function isOnline() { return typeof navigator !== 'undefined' ? navigator.onLine !== false : true; }
 function canUseCloud() { return sbReady && isOnline(); }
-function rememberAdmin(email) {
+function adminGranted() {
+  // localOnly : pas de Supabase configure du tout, donc pas de comptes.
+  // L'acces est alors gere au niveau de l'appareil, comme une caisse locale.
+  return isAdmin || offlineAdmin || localOnly;
+}
+function rememberAdmin(user) {
+  if (!user || !user.id) return;
   offlineAdmin = true;
-  try { localStorage.setItem(ADMIN_CACHE_KEY, JSON.stringify({ email: email || '', at: Date.now() })); } catch (e) {}
+  try {
+    localStorage.setItem(ADMIN_CACHE_KEY, JSON.stringify({
+      userId: user.id, email: user.email || '', at: Date.now()
+    }));
+  } catch (e) {}
 }
 function forgetAdmin() {
   offlineAdmin = false;
-  try { localStorage.removeItem(ADMIN_CACHE_KEY); } catch (e) {}
-}
-function restoreAdminCache() {
   try {
-    var r = localStorage.getItem(ADMIN_CACHE_KEY);
-    if (r) { offlineAdmin = true; return JSON.parse(r); }
+    localStorage.removeItem(ADMIN_CACHE_KEY);
+    localStorage.removeItem(LEGACY_ADMIN_CACHE_KEY);
   } catch (e) {}
-  return null;
+}
+function readAdminCache() {
+  try { return JSON.parse(localStorage.getItem(ADMIN_CACHE_KEY) || 'null'); } catch (e) { return null; }
+}
+// Accorde les droits gerant hors ligne SEULEMENT si :
+//   - un cache admin existe et a moins de 7 jours,
+//   - une session Supabase est presente localement (JWT signe par le serveur),
+//   - et cette session appartient bien a l'utilisateur mis en cache.
+// Forger cet acces demanderait un JWT valide, donc la cle secrete du projet.
+function verifyOfflineAdmin() {
+  offlineAdmin = false;
+  try { localStorage.removeItem(LEGACY_ADMIN_CACHE_KEY); } catch (e) {}
+  var cached = readAdminCache();
+  if (!cached || !cached.userId || !cached.at) return Promise.resolve(false);
+  if (Date.now() - Number(cached.at) > OFFLINE_ADMIN_MAX_AGE) {
+    forgetAdmin();
+    return Promise.resolve(false);
+  }
+  if (!sbReady) return Promise.resolve(false);
+  return sbClient.auth.getSession().then(function (res) {
+    var s = res && res.data && res.data.session;
+    if (!s || !s.user || s.user.id !== cached.userId) { forgetAdmin(); return false; }
+    offlineAdmin = true;
+    return true;
+  }).catch(function () { return false; });
 }
 
 // ===== UTILS =====
@@ -122,6 +216,12 @@ function escHtml(str) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
   });
 }
+// Attribut HTML classique (src, value, class...) : escHtml couvre deja les quotes.
+function escAttr(str) { return escHtml(str); }
+// Identifiant injecte dans du JS inline (onclick="f('...')"). Ici escHtml ne
+// suffit pas : le parseur HTML redecode &#39; en apostrophe AVANT que le JS soit
+// lu, donc on filtre au lieu d'echapper. Les id sont des UUID ou des slugs.
+function jsId(v) { return String(v == null ? '' : v).replace(/[^A-Za-z0-9_-]/g, ''); }
 function t(msg) {
   var el = document.getElementById('tst');
   if (!el) return;
@@ -134,9 +234,9 @@ function requireSb() {
   return sbReady && isOnline();
 }
 function requireAdmin() {
-  // Online : session admin Supabase
-  // Offline : autorise si cet appareil a déjà été connecté en admin
-  if (isAdmin || offlineAdmin) return true;
+  // Online  : session admin Supabase verifiee (profiles.role = 'admin')
+  // Offline : session admin locale valide (JWT) de moins de 7 jours
+  if (adminGranted()) return true;
   t('Connexion admin requise (ou réseau pour se connecter)');
   return false;
 }
@@ -155,20 +255,29 @@ function applySession(session) {
   if (!currentUser) {
     currentProfile = null;
     isAdmin = false;
-    // garde offlineAdmin pour pouvoir travailler hors ligne
+    // Plus de session = plus de droits gerant, et le cache sensible est vide.
+    forgetAdmin();
+    purgeSensitiveCache();
     updateAuthUI();
     return Promise.resolve();
   }
   return loadProfile(currentUser.id).then(function (p) {
     currentProfile = p;
     isAdmin = !!(p && p.role === 'admin');
-    if (isAdmin) rememberAdmin(currentUser.email);
+    if (isAdmin) {
+      rememberAdmin(currentUser);
+    } else {
+      forgetAdmin();
+      purgeSensitiveCache();
+    }
     updateAuthUI();
   }).catch(function () {
-    // profil injoignable : si cache admin local, on reste opérationnel
-    var cached = restoreAdminCache();
-    if (cached) offlineAdmin = true;
-    updateAuthUI();
+    // Profil injoignable (hors ligne) : on retombe sur la verification locale,
+    // qui exige une session valide correspondant au cache admin.
+    return verifyOfflineAdmin().then(function (ok) {
+      if (!ok) purgeSensitiveCache();
+      updateAuthUI();
+    });
   });
 }
 
@@ -177,14 +286,16 @@ function updateAuthUI() {
   var login = document.getElementById('incoming-login');
   var bar = document.getElementById('admin-session-bar');
   if (!icm) {
-    if (isAdmin) {
+    if (adminGranted() && !localOnly) {
       if (login) login.style.display = 'none';
       if (bar) {
         bar.style.display = 'flex';
         var em = document.getElementById('admin-email');
-        if (em) em.innerText = currentUser.email;
+        var cached = readAdminCache();
+        var label = (currentUser && currentUser.email) || (cached && cached.email) || 'Admin';
+        if (em) em.innerText = label + (isAdmin ? '' : ' · hors ligne');
       }
-      startIncomingOrdersFeed();
+      if (isAdmin) startIncomingOrdersFeed();
     } else {
       if (bar) bar.style.display = 'none';
       if (login) login.style.display = 'block';
@@ -228,7 +339,13 @@ function adminLogin(e) {
 }
 
 function adminLogout() {
+  // On coupe les droits localement AVANT l'appel reseau : si signOut echoue
+  // (hors ligne), l'appareil ne doit pas rester gerant.
+  isAdmin = false;
+  forgetAdmin();
+  purgeSensitiveCache();
   if (sbReady) sbClient.auth.signOut();
+  updateAuthUI();
 }
 
 function clientLogin(e) {
@@ -251,10 +368,12 @@ function clientSignup(e) {
   var pass = document.getElementById('client-signup-pass').value;
   if (!name || !email || !pass) { t('Nom, email et mot de passe requis'); return; }
   if (pass.length < 6) { t('Mot de passe : 6 caracteres min.'); return; }
+  // Aucun 'role' n'est envoye ici : le serveur force 'client' de toute facon
+  // (voir handle_new_user dans supabase-security-fix.sql).
   sbClient.auth.signUp({
     email: email,
     password: pass,
-    options: { data: { name: name, role: 'client' } }
+    options: { data: { name: name } }
   }).then(function (res) {
     if (res.error) { t('Inscription echouee : ' + res.error.message); return; }
     // Mettre à jour le profil avec le téléphone
@@ -268,6 +387,9 @@ function clientSignup(e) {
 }
 
 function clientLogout() {
+  isAdmin = false;
+  forgetAdmin();
+  purgeSensitiveCache();
   if (sbReady) sbClient.auth.signOut();
 }
 
@@ -296,7 +418,8 @@ function ensureClientRow(userId, name, phone) {
 // ===== DATA LOAD =====
 function mapProduct(r) {
   return {
-    id: r.id, name: r.name, price: Number(r.price), cost: Number(r.cost),
+    // cost est absent de la vue public_products : sans le || 0 on obtiendrait NaN
+    id: r.id, name: r.name, price: Number(r.price || 0), cost: Number(r.cost || 0),
     category: r.category, available: !!r.available, emoji: r.emoji || ge(r.category), photo: r.photo || null
   };
 }
@@ -337,15 +460,52 @@ function mapGoal(r) {
   return { id: r.id, title: r.title, type: r.type, target: Number(r.target), deadline: r.deadline || '', current: Number(r.current_val || 0) };
 }
 
+// Donnees publiques : on lit les VUES public_config / public_products, qui
+// n'exposent que ce qui est necessaire pour commander. Les prix d'achat
+// (products.cost), les objectifs de CA et les ambassadeurs restent reserves a
+// l'admin (voir loadAdminData) : les tables de base ne sont plus lisibles par
+// anon depuis supabase-security-fix.sql.
 function loadPublicData() {
   if (!canUseCloud()) return Promise.resolve();
   return Promise.all([
-    sbClient.from('config').select('*').eq('id', 1).maybeSingle(),
-    sbClient.from('products').select('*').order('name'),
-    sbClient.from('ambassadors').select('*').order('code')
+    sbClient.from('public_config').select('*').eq('id', 1).maybeSingle(),
+    sbClient.from('public_products').select('*').order('name')
   ]).then(function (results) {
     if (results[0].error || results[1].error) return;
     var cfg = results[0].data;
+    if (cfg) {
+      db.config.currency = cfg.currency || db.config.currency || 'FC';
+      db.config.whatsapp = cfg.whatsapp || '';
+    }
+    if (results[1].data) db.products = results[1].data.map(mapProduct);
+    sdb();
+  }).catch(function (e) { console.warn('loadPublicData offline/fail', e); });
+}
+
+// Donnees reservees au gerant. On y a deplace products (colonne cost),
+// config (marges et objectifs) et ambassadors (commissions, telephones).
+function loadAdminData() {
+  if (!canUseCloud() || !isAdmin) return Promise.resolve();
+  return Promise.all([
+    sbClient.from('clients').select('*').order('name'),
+    sbClient.from('orders').select('*').order('created_at', { ascending: false }).limit(500),
+    sbClient.from('stocks').select('*').order('name'),
+    sbClient.from('expenses').select('*').order('date', { ascending: false }).limit(300),
+    sbClient.from('goals').select('*').order('created_at', { ascending: false }),
+    sbClient.from('ambassadors').select('*').order('code'),
+    sbClient.from('products').select('*').order('name'),
+    sbClient.from('config').select('*').eq('id', 1).maybeSingle()
+  ]).then(function (results) {
+    if (results[0].data) db.clients = results[0].data.map(mapClient);
+    if (results[1].data) db.orders = results[1].data.map(mapOrder);
+    if (results[2].data) db.stocks = results[2].data.map(mapStock);
+    if (results[3].data) db.expenses = results[3].data.map(mapExpense);
+    if (results[4].data) db.goals = results[4].data.map(mapGoal);
+    if (results[5].data) db.ambassadors = results[5].data.map(mapAmb);
+    // Le menu complet remplace la version publique : il porte la colonne cost,
+    // indispensable pour les marges de la caisse et du tableau de bord.
+    if (results[6].data) db.products = results[6].data.map(mapProduct);
+    var cfg = results[7] && results[7].data;
     if (cfg) {
       db.config = {
         currency: cfg.currency || 'FC',
@@ -356,26 +516,6 @@ function loadPublicData() {
         whatsapp: cfg.whatsapp || ''
       };
     }
-    if (results[1].data) db.products = results[1].data.map(mapProduct);
-    if (results[2].data) db.ambassadors = results[2].data.map(mapAmb);
-    sdb();
-  }).catch(function (e) { console.warn('loadPublicData offline/fail', e); });
-}
-
-function loadAdminData() {
-  if (!canUseCloud() || !isAdmin) return Promise.resolve();
-  return Promise.all([
-    sbClient.from('clients').select('*').order('name'),
-    sbClient.from('orders').select('*').order('created_at', { ascending: false }).limit(500),
-    sbClient.from('stocks').select('*').order('name'),
-    sbClient.from('expenses').select('*').order('date', { ascending: false }).limit(300),
-    sbClient.from('goals').select('*').order('created_at', { ascending: false })
-  ]).then(function (results) {
-    if (results[0].data) db.clients = results[0].data.map(mapClient);
-    if (results[1].data) db.orders = results[1].data.map(mapOrder);
-    if (results[2].data) db.stocks = results[2].data.map(mapStock);
-    if (results[3].data) db.expenses = results[3].data.map(mapExpense);
-    if (results[4].data) db.goals = results[4].data.map(mapGoal);
     sdb();
   }).catch(function (e) { console.warn('loadAdminData offline/fail', e); });
 }
@@ -410,14 +550,14 @@ function refreshAll() {
     if (icm) {
       rcm();
       if (currentUser) loadClientOrders();
-    } else if (isAdmin || offlineAdmin) {
+    } else if (adminGranted()) {
       var active = document.querySelector('.sc.a');
       var id = active ? active.id.replace('s-', '') : 'dash';
       sp(id);
     }
   }).catch(function () {
     if (icm) rcm();
-    else if (isAdmin || offlineAdmin) sp('dash');
+    else if (adminGranted()) sp('dash');
   });
 }
 
@@ -527,15 +667,22 @@ try {
   }
 } catch (e) {}
 
-var dp;
+var deferredPrompt = null;
 window.addEventListener('beforeinstallprompt', function (e) {
   e.preventDefault();
-  dp = e;
+  deferredPrompt = e;
   var b = document.getElementById('ib');
   if (b) b.style.display = 'flex';
 });
 function ip() {
-  if (dp) { dp.prompt(); dp.userChoice.then(function () { var b = document.getElementById('ib'); if (b) b.style.display = 'none'; dp = null; }); }
+  if (deferredPrompt) {
+    deferredPrompt.prompt();
+    deferredPrompt.userChoice.then(function () {
+      var b = document.getElementById('ib');
+      if (b) b.style.display = 'none';
+      deferredPrompt = null;
+    });
+  }
 }
 
 // ===== CLIENT MODE =====
@@ -575,8 +722,8 @@ function rcm() {
   g.innerHTML = prods.map(function (p) {
     var inc = ccart.find(function (c) { return c.id === p.id; });
     var q = inc ? inc.qty : 0;
-    var pic = p.photo ? '<img src="' + p.photo + '" alt="" style="width:100%;height:100%;object-fit:cover">' : (p.emoji || '🍽️');
-    return '<div class="pc"><div class="pi">' + pic + '</div><div class="pn"><div class="n">' + escHtml(p.name) + '</div><div class="d">' + escHtml(p.category) + '</div><div class="pr">' + fmt(p.price) + '</div><div class="pa"><button class="qb" onclick="ucc(\'' + p.id + '\',-1)">−</button><span class="qv">' + q + '</span><button class="qb" onclick="ucc(\'' + p.id + '\',1)">+</button></div></div></div>';
+    var pic = p.photo ? '<img src="' + escAttr(p.photo) + '" alt="" style="width:100%;height:100%;object-fit:cover">' : escHtml(p.emoji || '🍽️');
+    return '<div class="pc"><div class="pi">' + pic + '</div><div class="pn"><div class="n">' + escHtml(p.name) + '</div><div class="d">' + escHtml(p.category) + '</div><div class="pr">' + fmt(p.price) + '</div><div class="pa"><button class="qb" onclick="ucc(\'' + jsId(p.id) + '\',-1)">−</button><span class="qv">' + q + '</span><button class="qb" onclick="ucc(\'' + jsId(p.id) + '\',1)">+</button></div></div></div>';
   }).join('');
 }
 
@@ -710,39 +857,28 @@ function goqr() {
     var qimg = qri.querySelector('img'); if (qimg) qimg.alt = 'QR code de la commande';
     t('QR genere !');
   } catch (e) {
-    qri.innerHTML = '<div style="padding:20px;background:#fff;color:#000;border-radius:12px;font-family:monospace;font-size:12px;word-break:break-all;max-width:280px">' + b64 + '</div>';
+    qri.innerHTML = '<div style="padding:20px;background:#fff;color:#000;border-radius:12px;font-family:monospace;font-size:12px;word-break:break-all;max-width:280px">' + escHtml(b64) + '</div>';
     t('QR indisponible, code affiche en texte');
   }
 }
 
 function saveClientOrderHistory(data) {
   if (!sbReady || !currentUser) return;
-  var tot = data.total || 0;
-  var cst = (data.items || []).reduce(function (s, i) { return s + (i.cost || 0) * (i.qty || 1); }, 0);
+  // On n'envoie plus total / cost / profit / status : le serveur les recalcule
+  // depuis la table products (trigger enforce_order_integrity). Les compteurs
+  // de la fiche client sont eux aussi mis a jour cote serveur.
   ensureClientRow(currentUser.id, data.name, data.phone).then(function (client) {
     sbClient.from('orders').insert([{
       client_id: client ? client.id : null,
       client_name: data.name,
       user_id: currentUser.id,
-      items: data.items,
-      total: tot,
-      cost: cst,
-      profit: tot - cst,
-      payment: 'pending',
+      items: (data.items || []).map(function (i) { return { id: i.id, name: i.name, qty: i.qty }; }),
       ambassador: data.ambassadorCode || '',
       order_type: data.orderType,
       address: data.address,
-      notes: data.notes,
-      status: 'en_attente',
-      is_new_client: false
-    }]).then(function () {
-      if (client) {
-        sbClient.from('clients').update({
-          orders_count: (client.orders_count || 0) + 1,
-          total: Number(client.total || 0) + tot,
-          last_order: new Date().toISOString()
-        }).eq('id', client.id).then(function () {});
-      }
+      notes: data.notes
+    }]).then(function (res) {
+      if (res && res.error) { console.error('Enregistrement commande echoue', res.error); return; }
       loadClientOrders();
     });
   });
@@ -950,7 +1086,7 @@ function aoi() {
   var c = document.getElementById('ois');
   var d = document.createElement('div'); d.className = 'oi';
   var opts = '<option value="">Choisir</option>' + db.products.filter(function (p) { return p.available; }).map(function (p) {
-    return '<option value="' + p.id + '">' + escHtml(p.name) + ' (' + fmt(p.price) + ')</option>';
+    return '<option value="' + escAttr(p.id) + '">' + escHtml(p.name) + ' (' + fmt(p.price) + ')</option>';
   }).join('');
   d.innerHTML = '<select class="op" onchange="uot()" required>' + opts + '</select><input type="number" class="oq" value="1" min="1" onchange="uot()"><button type="button" class="be bs2" onclick="roi(this)">✕</button>';
   c.appendChild(d);
@@ -1017,9 +1153,9 @@ function fillOrderFromScan(data) {
     });
     var row = document.createElement('div'); row.className = 'oi';
     var opts = '<option value="">Choisir</option>' + db.products.filter(function (p) { return p.available; }).map(function (p) {
-      return '<option value="' + p.id + '"' + (prod && prod.id === p.id ? ' selected' : '') + '>' + escHtml(p.name) + ' (' + fmt(p.price) + ')</option>';
+      return '<option value="' + escAttr(p.id) + '"' + (prod && prod.id === p.id ? ' selected' : '') + '>' + escHtml(p.name) + ' (' + fmt(p.price) + ')</option>';
     }).join('');
-    row.innerHTML = '<select class="op" onchange="uot()" required>' + opts + '</select><input type="number" class="oq" value="' + (it.qty || 1) + '" min="1" onchange="uot()"><button type="button" class="be bs2" onclick="roi(this)">✕</button>';
+    row.innerHTML = '<select class="op" onchange="uot()" required>' + opts + '</select><input type="number" class="oq" value="' + (Math.max(1, Math.min(100, parseInt(it.qty, 10) || 1))) + '" min="1" onchange="uot()"><button type="button" class="be bs2" onclick="roi(this)">✕</button>';
     container.appendChild(row);
   });
   if (container.children.length === 0) aoi();
@@ -1446,7 +1582,7 @@ function rd(period) {
   var al = document.getElementById('alerts');
   al.innerHTML = '';
   db.stocks.filter(function (s) { return s.qty <= s.min; }).forEach(function (s) {
-    al.innerHTML += '<div class="al">Stock bas: ' + escHtml(s.name) + ' (' + s.qty + ' ' + escHtml(s.unit) + ')</div>';
+    al.innerHTML += '<div class="al">Stock bas: ' + escHtml(s.name) + ' (' + escHtml(s.qty) + ' ' + escHtml(s.unit) + ')</div>';
   });
 
   var ctx = document.getElementById('c1');
@@ -1475,14 +1611,14 @@ function roc() {
   var sel = document.getElementById('oc');
   sel.innerHTML = '<option value="">-- Nouveau --</option>';
   db.clients.forEach(function (c) {
-    sel.innerHTML += '<option value="' + c.id + '">' + escHtml(c.name) + ' (' + escHtml(c.phone || '') + ')</option>';
+    sel.innerHTML += '<option value="' + escAttr(c.id) + '">' + escHtml(c.name) + ' (' + escHtml(c.phone || '') + ')</option>';
   });
 }
 function roc2() {
   var sel = document.getElementById('oa');
   sel.innerHTML = '<option value="">Aucun</option>';
   db.ambassadors.forEach(function (a) {
-    sel.innerHTML += '<option value="' + a.id + '">' + escHtml(a.code) + ' - ' + escHtml(a.name) + '</option>';
+    sel.innerHTML += '<option value="' + escAttr(a.id) + '">' + escHtml(a.code) + ' - ' + escHtml(a.name) + '</option>';
   });
 }
 function rcl(filter) {
@@ -1494,7 +1630,7 @@ function rcl(filter) {
   if (filter === 'week') list = list.filter(function (o) { return iw2(o.date); });
   list.forEach(function (o, i) {
     var prods = (o.items || []).map(function (it) { return it.name + ' x' + it.qty; }).join(', ');
-    tbody.innerHTML += '<tr><td>' + (i + 1) + '</td><td>' + String(o.date || '').split('T')[0] + '</td><td>' + escHtml(prods) + '</td><td>' + fmt(o.total) + '</td><td>' + fmt(o.profit) + '</td><td><button class="bs bs2" onclick="do2(\'' + o.id + '\')">👁</button></td></tr>';
+    tbody.innerHTML += '<tr><td>' + (i + 1) + '</td><td>' + escHtml(String(o.date || '').split('T')[0]) + '</td><td>' + escHtml(prods) + '</td><td>' + fmt(o.total) + '</td><td>' + fmt(o.profit) + '</td><td><button class="bs bs2" onclick="do2(\'' + jsId(o.id) + '\')">👁</button></td></tr>';
   });
 }
 function do2(id) {
@@ -1521,9 +1657,9 @@ function rml(filter) {
   list.forEach(function (p) {
     var st = p.available ? '<span class="bd bds">Dispo</span>' : '<span class="bd bde">Indispo</span>';
     var thumb = p.photo
-      ? '<img src="' + p.photo + '" alt="" style="width:34px;height:34px;object-fit:cover;border-radius:6px;vertical-align:middle;margin-right:6px">'
-      : '<span style="margin-right:6px">' + (p.emoji || '🍽️') + '</span>';
-    tbody.innerHTML += '<tr><td>' + thumb + escHtml(p.name) + '</td><td>' + p.category + '</td><td>' + fmt(p.price) + '</td><td>' + fmt(p.cost) + '</td><td>' + fmt(p.price - p.cost) + '</td><td>' + st + '</td><td><button class="bs bs2" onclick="ep(\'' + p.id + '\')">✎</button> <button class="be bs2" onclick="dp(\'' + p.id + '\')">✕</button></td></tr>';
+      ? '<img src="' + escAttr(p.photo) + '" alt="" style="width:34px;height:34px;object-fit:cover;border-radius:6px;vertical-align:middle;margin-right:6px">'
+      : '<span style="margin-right:6px">' + escHtml(p.emoji || '🍽️') + '</span>';
+    tbody.innerHTML += '<tr><td>' + thumb + escHtml(p.name) + '</td><td>' + escHtml(p.category) + '</td><td>' + fmt(p.price) + '</td><td>' + fmt(p.cost) + '</td><td>' + fmt(p.price - p.cost) + '</td><td>' + st + '</td><td><button class="bs bs2" onclick="ep(\'' + jsId(p.id) + '\')">✎</button> <button class="be bs2" onclick="deleteProduct(\'' + jsId(p.id) + '\')">✕</button></td></tr>';
   });
 }
 function ep(id) {
@@ -1548,7 +1684,7 @@ function ep(id) {
     document.getElementById('pphoto-remove').style.display = 'none';
   }
 }
-function dp(id) {
+function deleteProduct(id) {
   if (!requireAdmin()) return;
   if (!confirm('Supprimer ?')) return;
   db.products = db.products.filter(function (x) { return x.id !== id; });
@@ -1565,14 +1701,14 @@ function ral() {
   tbody.innerHTML = '';
   db.ambassadors.forEach(function (a) {
     var rest = a.commission - a.paid;
-    tbody.innerHTML += '<tr><td>' + escHtml(a.code) + '</td><td>' + escHtml(a.name) + '</td><td>' + a.newClients + '</td><td>' + fmt(a.revenue) + '</td><td>' + fmt(a.commission) + '</td><td>' + fmt(a.paid) + '</td><td class="' + (rest > 0 ? 'kn' : 'kp') + '">' + fmt(rest) + '</td><td><button class="be bs2" onclick="da(\'' + a.id + '\')">✕</button></td></tr>';
+    tbody.innerHTML += '<tr><td>' + escHtml(a.code) + '</td><td>' + escHtml(a.name) + '</td><td>' + escHtml(a.newClients) + '</td><td>' + fmt(a.revenue) + '</td><td>' + fmt(a.commission) + '</td><td>' + fmt(a.paid) + '</td><td class="' + (rest > 0 ? 'kn' : 'kp') + '">' + fmt(rest) + '</td><td><button class="be bs2" onclick="da(\'' + jsId(a.id) + '\')">✕</button></td></tr>';
   });
 }
 function rpa() {
   var sel = document.getElementById('pa');
   sel.innerHTML = '<option value="">Choisir</option>';
   db.ambassadors.forEach(function (a) {
-    sel.innerHTML += '<option value="' + a.id + '">' + escHtml(a.code) + ' - ' + escHtml(a.name) + ' (Reste: ' + fmt(a.commission - a.paid) + ')</option>';
+    sel.innerHTML += '<option value="' + escAttr(a.id) + '">' + escHtml(a.code) + ' - ' + escHtml(a.name) + ' (Reste: ' + fmt(a.commission - a.paid) + ')</option>';
   });
 }
 
@@ -1583,7 +1719,7 @@ function rctl(q) {
   if (q) list = list.filter(function (c) { return (c.name + ' ' + (c.phone || '')).toLowerCase().indexOf(q) >= 0; });
   list.forEach(function (c) {
     var type = c.orders === 1 ? 'Nouveau' : c.orders > 3 ? 'VIP' : 'Recurrent';
-    tbody.innerHTML += '<tr><td>' + String(c.id).substr(-4) + '</td><td>' + escHtml(c.name) + '</td><td>' + escHtml(c.phone || '') + '</td><td>' + c.orders + '</td><td>' + fmt(c.total) + '</td><td>' + (c.lastOrder ? String(c.lastOrder).split('T')[0] : '-') + '</td><td>' + type + '</td><td>' + escHtml(c.ambassador || '') + '</td></tr>';
+    tbody.innerHTML += '<tr><td>' + escHtml(String(c.id).substr(-4)) + '</td><td>' + escHtml(c.name) + '</td><td>' + escHtml(c.phone || '') + '</td><td>' + escHtml(c.orders) + '</td><td>' + fmt(c.total) + '</td><td>' + escHtml(c.lastOrder ? String(c.lastOrder).split('T')[0] : '-') + '</td><td>' + type + '</td><td>' + escHtml(c.ambassador || '') + '</td></tr>';
   });
 }
 
@@ -1592,14 +1728,14 @@ function rsl() {
   tbody.innerHTML = '';
   db.stocks.forEach(function (s) {
     var alert = s.qty <= s.min ? 'kn' : 'kp';
-    tbody.innerHTML += '<tr><td>' + escHtml(s.name) + '</td><td class="' + alert + '">' + s.qty + '</td><td>' + escHtml(s.unit) + '</td><td>' + s.min + '</td><td>' + fmt(s.cost) + '</td><td><button class="bs bs2" onclick="es2(\'' + s.id + '\')">✎</button> <button class="be bs2" onclick="ds(\'' + s.id + '\')">✕</button></td></tr>';
+    tbody.innerHTML += '<tr><td>' + escHtml(s.name) + '</td><td class="' + alert + '">' + escHtml(s.qty) + '</td><td>' + escHtml(s.unit) + '</td><td>' + escHtml(s.min) + '</td><td>' + fmt(s.cost) + '</td><td><button class="bs bs2" onclick="es2(\'' + jsId(s.id) + '\')">✎</button> <button class="be bs2" onclick="ds(\'' + jsId(s.id) + '\')">✕</button></td></tr>';
   });
 }
 function rms() {
   var sel = document.getElementById('ms');
   sel.innerHTML = '';
   db.stocks.forEach(function (s) {
-    sel.innerHTML += '<option value="' + s.id + '">' + escHtml(s.name) + ' (' + s.qty + ' ' + escHtml(s.unit) + ')</option>';
+    sel.innerHTML += '<option value="' + escAttr(s.id) + '">' + escHtml(s.name) + ' (' + escHtml(s.qty) + ' ' + escHtml(s.unit) + ')</option>';
   });
 }
 function es2(id) {
@@ -1617,7 +1753,7 @@ function re() {
   var tbody = document.getElementById('el');
   tbody.innerHTML = '';
   db.expenses.forEach(function (e) {
-    tbody.innerHTML += '<tr><td>' + e.date + '</td><td>' + e.category + '</td><td>' + fmt(e.amount) + '</td><td>' + escHtml(e.desc || '') + '</td><td><button class="be bs2" onclick="de2(\'' + e.id + '\')">✕</button></td></tr>';
+    tbody.innerHTML += '<tr><td>' + escHtml(e.date) + '</td><td>' + escHtml(e.category) + '</td><td>' + fmt(e.amount) + '</td><td>' + escHtml(e.desc || '') + '</td><td><button class="be bs2" onclick="de2(\'' + jsId(e.id) + '\')">✕</button></td></tr>';
   });
 }
 function rf() {
@@ -1712,7 +1848,7 @@ function rgl() {
     else if (g.type === 'clients') cur = db.clients.length;
     else cur = g.current || 0;
     var pct = Math.min(100, Math.round((cur / g.target) * 100)) || 0;
-    var dl = g.deadline ? ' (avant ' + g.deadline + ')' : '';
+    var dl = g.deadline ? ' (avant ' + escHtml(g.deadline) + ')' : '';
     c.innerHTML += '<div class="cd"><h3>' + escHtml(g.title) + dl + '</h3><div style="display:flex;justify-content:space-between;font-size:.9rem;margin-bottom:6px"><span>' + fmtN(cur) + ' / ' + fmtN(g.target) + '</span><span>' + pct + '%</span></div><div class="pb"><div class="pf" style="width:' + pct + '%"></div></div></div>';
   });
 }
@@ -1732,7 +1868,7 @@ function rse() {
     new QRCode(qri, { text: url, width: 180, height: 180, colorDark: "#000000", colorLight: "#ffffff" });
     var qimg2 = qri.querySelector('img'); if (qimg2) qimg2.alt = 'QR code du lien client';
   } catch (e) {
-    qri.innerHTML = '<p style="font-size:.75rem;color:var(--t2);word-break:break-all">' + url + '</p>';
+    qri.innerHTML = '<p style="font-size:.75rem;color:var(--t2);word-break:break-all">' + escHtml(url) + '</p>';
   }
 }
 
@@ -1740,7 +1876,6 @@ function rse() {
 document.addEventListener('DOMContentLoaded', function () {
   // 1) Charger le cache local immédiatement (marche sans réseau)
   var hadLocal = ldb();
-  restoreAdminCache();
   if (!hadLocal) seedIfEmpty();
 
   if (icm) {
@@ -1748,31 +1883,35 @@ document.addEventListener('DOMContentLoaded', function () {
     scp('menu');
   } else {
     document.getElementById('mm').style.display = 'block';
-    // si admin déjà connu hors ligne, UI admin utile tout de suite
-    if (offlineAdmin) {
-      var bar = document.getElementById('admin-session-bar');
-      var login = document.getElementById('incoming-login');
-      if (login) login.style.display = 'none';
-      if (bar) {
-        bar.style.display = 'flex';
-        var em = document.getElementById('admin-email');
-        try {
-          var c = JSON.parse(localStorage.getItem(ADMIN_CACHE_KEY) || '{}');
-          if (em) em.innerText = (c.email || 'Admin (hors ligne)') + (isOnline() ? '' : ' · offline');
-        } catch (e) { if (em) em.innerText = 'Admin (hors ligne)'; }
-      }
-    }
+    // Les droits gerant ne sont PAS accordes ici : on attend la verification
+    // de la session locale (verifyOfflineAdmin) avant d'afficher quoi que ce soit.
+    updateAuthUI();
     sp('dash');
   }
 
   // 2) Puis tenter le cloud si dispo
   if (!sbReady) {
+    var msg = cloudUnavailable
+      ? 'Connexion au serveur impossible (librairie non chargee). Reessaie avec une connexion internet : les donnees du gerant restent verrouillees.'
+      : 'Mode local uniquement (Supabase non configure). Les donnees restent sur cet appareil.';
     document.body.insertAdjacentHTML('afterbegin',
       '<div style="background:#ff9800;color:#000;padding:10px 14px;text-align:center;font-size:.85rem;position:sticky;top:0;z-index:300">' +
-      'Mode local uniquement (Supabase non configure). Les donnees restent sur cet appareil.</div>'
+      escHtml(msg) + '</div>'
     );
+    if (!localOnly) {
+      // Configure mais injoignable : aucun droit gerant, et rien de sensible
+      // ne reste en cache sur l'appareil.
+      purgeSensitiveCache();
+      if (!icm) { updateAuthUI(); sp('dash'); }
+    }
     return;
   }
+
+  // 3) Verifier les droits gerant hors ligne (session locale + cache < 7 jours)
+  verifyOfflineAdmin().then(function (ok) {
+    if (!ok && !localOnly) purgeSensitiveCache();
+    if (!icm) { updateAuthUI(); sp('dash'); }
+  });
 
   function tryCloudSync() {
     if (!isOnline()) return;
