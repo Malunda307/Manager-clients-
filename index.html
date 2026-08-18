@@ -13,6 +13,8 @@
   <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js" defer crossorigin="anonymous"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" defer crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js" defer crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js" defer crossorigin="anonymous"></script>
 </head>
 <body>
   <noscript>
@@ -139,10 +141,40 @@
       </div>
 
       <div id="cs-track" class="cs">
-        <div class="es">
-          <div class="i">📍</div>
-          <p>Suivi des commandes</p>
-          <p style="font-size:.8rem">Bientot disponible</p>
+        <div class="cd" id="client-session-bar" style="display:none;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <span style="font-size:.85rem;color:var(--t2)">Connecte : <strong id="client-name-display"></strong></span>
+          <button class="bs bs2" onclick="clientLogout()">Deconnexion</button>
+        </div>
+
+        <div class="cd" id="client-auth-box" style="display:none">
+          <h3 style="margin-bottom:10px">Mon compte</h3>
+          <p style="color:var(--t2);font-size:.85rem;margin-bottom:12px">Connecte-toi pour retrouver l'historique de tes commandes.</p>
+          <div class="fb" id="client-auth-tabs" style="margin-bottom:12px">
+            <button class="a" data-tab="login" onclick="showClientAuthTab('login')">Connexion</button>
+            <button data-tab="signup" onclick="showClientAuthTab('signup')">Creer un compte</button>
+          </div>
+          <form id="client-login-form" onsubmit="clientLogin(event)" style="display:flex;flex-direction:column;gap:10px">
+            <input type="email" id="client-email-input" placeholder="Email" required autocomplete="username">
+            <input type="password" id="client-pass-input" placeholder="Mot de passe" required autocomplete="current-password">
+            <button type="submit" class="bm">Se connecter</button>
+          </form>
+          <form id="client-signup-form" style="display:none;flex-direction:column;gap:10px" onsubmit="clientSignup(event)">
+            <input type="text" id="client-signup-name" placeholder="Nom complet" required>
+            <input type="tel" id="client-signup-phone" placeholder="Telephone">
+            <input type="email" id="client-signup-email" placeholder="Email" required autocomplete="email">
+            <input type="password" id="client-signup-pass" placeholder="Mot de passe (6+ caracteres)" required minlength="6" autocomplete="new-password">
+            <button type="submit" class="bm">Creer mon compte</button>
+          </form>
+        </div>
+
+        <div class="cd">
+          <h3>Mes commandes</h3>
+          <div id="client-orders-empty" class="es">
+            <div class="i">📍</div>
+            <p>Aucune commande</p>
+            <p style="font-size:.8rem">Connecte-toi ou passe une commande pour la voir ici</p>
+          </div>
+          <div id="client-orders-list"></div>
         </div>
       </div>
     </div>
@@ -160,7 +192,7 @@
 
       <nav class="mn">
         <button onclick="sp('dash')" class="a" id="n-dash"><span class="i">📊</span><span>Accueil</span></button>
-        <button onclick="sp('cmd')" id="n-cmd"><span class="i">📝</span><span>Cmd</span></button>
+        <button onclick="sp('cmd')" id="n-cmd" style="position:relative"><span class="i">📝</span><span>Cmd</span><span id="cmd-badge" style="display:none;position:absolute;top:2px;right:4px;background:var(--s);color:#000;font-size:.6rem;padding:1px 5px;border-radius:10px;font-weight:700">0</span></button>
         <button onclick="sp('menu')" id="n-menu"><span class="i">🍔</span><span>Menu</span></button>
         <button onclick="sp('amb')" id="n-amb"><span class="i">🤝</span><span>Amb.</span></button>
         <button onclick="sp('clients')" id="n-clients"><span class="i">👥</span><span>Clients</span></button>
@@ -204,6 +236,25 @@
       </div>
 
       <div id="s-cmd" class="sc">
+        <div class="cd" id="incoming-login" style="display:none">
+          <h3>🔒 Commandes en direct</h3>
+          <p style="color:var(--t2);font-size:.85rem;margin-bottom:12px">Connecte-toi pour voir les commandes recues en direct (reserve au gerant).</p>
+          <form onsubmit="adminLogin(event)">
+            <label for="admin-email-input" class="sr-only">Email</label>
+            <input type="email" id="admin-email-input" name="admin-email" placeholder="Email" required autocomplete="username">
+            <label for="admin-pass-input" class="sr-only">Mot de passe</label>
+            <input type="password" id="admin-pass-input" name="admin-pass" placeholder="Mot de passe" required autocomplete="current-password">
+            <button type="submit" class="bm">Se connecter</button>
+          </form>
+        </div>
+        <div class="cd" id="admin-session-bar" style="display:none;align-items:center;justify-content:space-between">
+          <span style="font-size:.85rem;color:var(--t2)">Connecte : <strong id="admin-email"></strong></span>
+          <button class="bs bs2" onclick="adminLogout()">Se deconnecter</button>
+        </div>
+        <div class="cd" id="incoming-wrap" style="display:none">
+          <h3>📥 Commandes recues en direct</h3>
+          <div id="incoming-orders"></div>
+        </div>
         <div class="cd">
           <h3>Nouvelle Commande</h3>
           <form id="of" onsubmit="ho(event)">
@@ -267,7 +318,13 @@
             </select>
             <input aria-label="Prix" type="number" id="pp" name="pp" placeholder="Prix" required>
             <input aria-label="Cout" type="number" id="pco" name="pco" placeholder="Cout" required>
-            <label style="display:flex;align-items:center;gap:8px;font-size:.9rem;color:var(--t);cursor:pointer" for="s1">
+            <label style="font-size:.8rem;color:var(--t2);text-transform:uppercase;letter-spacing:.5px">Photo du plat</label>
+            <input type="file" accept="image/*" id="pphoto" name="pphoto" aria-label="Photo du produit" onchange="onPhotoSelected(this)">
+            <div style="display:flex;align-items:center;gap:10px" id="pphoto-row">
+              <img id="pphoto-preview" alt="Apercu de la photo" style="display:none;width:70px;height:70px;object-fit:cover;border-radius:10px;border:1px solid var(--b)">
+              <button type="button" class="bs bs2" id="pphoto-remove" onclick="removePhoto()" style="display:none">Retirer la photo</button>
+            </div>
+            <label style="display:flex;align-items:center;gap:8px;font-size:.9rem;color:var(--t);cursor:pointer">
               <input type="checkbox" id="pav" name="pav" checked style="width:auto"> Disponible
             </label>
             <div class="sr"><span>Marge:</span><strong id="pmp">0</strong></div>
@@ -532,14 +589,16 @@
         </div>
         <div class="cd">
           <h3>Donnees</h3>
-          <button class="bw2" onclick="ldd()" style="width:100%;margin-bottom:10px">Charger demo</button>
-          <button class="be" onclick="cad()" style="width:100%">Tout effacer</button>
+          <p style="color:var(--t2);font-size:.85rem;margin-bottom:10px">
+            Toutes les donnees sont dans Supabase (cloud). Menu, commandes, stock, clients… sont partages entre appareils.
+          </p>
+          <button class="bs" onclick="refreshAll().then(function(){t('Donnees rafraichies')})" style="width:100%;margin-bottom:10px">Rafraichir depuis le cloud</button>
         </div>
         <div class="cd">
           <h3>A propos</h3>
           <p style="color:var(--t2);font-size:.85rem">
-            Dinner Burger Manager v2.0<br>
-            PWA mode client+gerant<br>
+            Dinner Burger Manager v3.0<br>
+            PWA client + gerant · Supabase<br>
             <span id="sws">SW: verif...</span>
           </p>
         </div>
@@ -548,6 +607,15 @@
   </div>
 
   <!-- MODALS -->
+  <div class="mo" id="moadd" role="dialog" aria-modal="true" aria-label="Produit ajoute au panier" onclick="if(event.target===this)continueShoppingChoice()">
+    <div class="md">
+      <div class="mh2"><h2>Ajoute au panier 🛒</h2><button class="cl" aria-label="Fermer" onclick="continueShoppingChoice()">✕</button></div>
+      <p style="color:var(--t2);font-size:.9rem;margin-bottom:18px">Que voulez-vous faire maintenant ?</p>
+      <button class="bq" style="width:100%;margin-bottom:10px" onclick="continueShoppingChoice()">🛍️ Continuer mes achats</button>
+      <button class="bw" style="width:100%" onclick="checkoutNowChoice()">⚡ Commander maintenant</button>
+    </div>
+  </div>
+
   <div class="mo" id="mo" role="dialog" aria-modal="true" aria-label="Detail" onclick="if(event.target===this)cm('mo')">
     <div class="md">
       <div class="mh2"><h2>Detail</h2><button class="cl" aria-label="Fermer" onclick="cm('mo')">✕</button></div>
@@ -555,9 +623,9 @@
     </div>
   </div>
 
-  <div class="mo" id="mos" role="dialog" aria-modal="true" aria-label="Scanner QR" onclick="if(event.target===this)cm('mos')">
+  <div class="mo" id="mos" role="dialog" aria-modal="true" aria-label="Scanner QR" onclick="if(event.target===this)closeScannerModal()">
     <div class="md">
-      <div class="mh2"><h2>📷 Scanner QR</h2><button class="cl" aria-label="Fermer" onclick="cm('mos')">✕</button></div>
+      <div class="mh2"><h2>📷 Scanner QR</h2><button class="cl" aria-label="Fermer" onclick="closeScannerModal()">✕</button></div>
       <div id="sc2-container" style="width:100%;max-width:400px;margin:0 auto;border-radius:16px;overflow:hidden;border:2px solid var(--p);min-height:300px;display:flex;align-items:center;justify-content:center;background:#000">
         <p style="color:var(--t2)">Chargement...</p>
       </div>
