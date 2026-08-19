@@ -38,13 +38,23 @@ function sendOrderNotification(data){
         'Priority': 'high',
         'Tags': 'hamburger'
       }
-    }).catch(function(err){ console.warn('Notification ntfy echouee', err); });
+    }).then(function(res){
+      if(!res.ok){
+        return res.text().then(function(txt){
+          console.warn('Notification ntfy refusee', res.status, txt);
+          t('⚠️ Notif non envoyee (' + res.status + ') : ' + txt.slice(0, 80));
+        });
+      }
+    }).catch(function(err){
+      console.warn('Notification ntfy echouee', err);
+      t('⚠️ Notif non envoyee : connexion impossible');
+    });
   } catch(e){ console.warn('Notification ntfy echouee', e); }
 }
 
 function pushOrderToCloud(data){
   if(!sbReady) return Promise.resolve({ ok:false, reason:'not-configured' });
-  return sbClient.from('orders_incoming').insert([{ payload: data, status: 'nouvelle' }]).then(function(res){
+  return sbClient.from('orders_incoming').insert([{ payload: data, status: 'nouvelle', code: data.code }]).then(function(res){
     if(res && res.error){ console.error('Envoi Supabase echoue', res.error); return { ok:false, reason:'error', error:res.error }; }
     return { ok:true };
   }).catch(function(err){
@@ -91,7 +101,7 @@ function stopIncomingOrdersFeed(){
 
 function startIncomingOrdersFeed(){
   stopIncomingOrdersFeed(); // evite les abonnements en double (ex: si l'etat d'auth change plusieurs fois)
-  sbClient.from('orders_incoming').select('*').eq('status', 'nouvelle').order('created_at', { ascending: true })
+  sbClient.from('orders_incoming').select('*').in('status', ['nouvelle','en_preparation','pret']).order('created_at', { ascending: true })
     .then(function(res){
       if(res && res.data){
         incomingOrders = res.data;
@@ -153,23 +163,39 @@ function renderIncomingOrders(){
   }
   wrap.style.display = 'block';
   if(badge){ badge.style.display = 'block'; badge.innerText = incomingOrders.length; }
+  var nextLabel = { nouvelle: '▶ Debuter preparation', en_preparation: '✅ Marquer pret', pret: '🎉 Recuperee' };
   list.innerHTML = incomingOrders.map(function(o, i){
     var d = o.payload || {};
     var when = o.created_at ? new Date(o.created_at).toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}) : '';
-    return '<div class="ci"><div class="cin"><div class="nn">' + escHtml(d.name||'Client') + ' — ' + fmt(d.total||0) + '</div><div class="pp">' + when + '</div></div>' +
-      '<button class="bok bs2" onclick="importIncomingOrder(' + i + ')">Importer</button> ' +
+    var st = o.status || 'nouvelle';
+    var advanceBtn = nextLabel[st] ? '<button class="bok bs2" onclick="advanceOrderStatus(' + i + ')">' + nextLabel[st] + '</button> ' : '';
+    return '<div class="ci"><div class="cin"><div class="nn">#' + escHtml(o.code||'----') + ' — ' + escHtml(d.name||'Client') + ' — ' + fmt(d.total||0) + '</div><div class="pp">' + when + ' · ' + escHtml(st) + '</div></div>' +
+      advanceBtn +
+      '<button class="bs bs2" onclick="importIncomingOrder(' + i + ')">Importer</button> ' +
       '<button class="be bs2" onclick="dismissIncomingOrder(' + i + ')">✕</button></div>';
   }).join('');
+}
+
+function advanceOrderStatus(i){
+  var o = incomingOrders[i];
+  if(!o) return;
+  var next = { nouvelle: 'en_preparation', en_preparation: 'pret', pret: 'traitee' }[o.status || 'nouvelle'];
+  if(!next) return;
+  markIncomingOrder(o.id, next);
+  if(next === 'traitee'){
+    incomingOrders.splice(i, 1);
+  } else {
+    o.status = next;
+  }
+  renderIncomingOrders();
+  t(next === 'pret' ? 'Client notifie : commande prete !' : 'Statut mis a jour');
 }
 
 function importIncomingOrder(i){
   var o = incomingOrders[i];
   if(!o) return;
   fillOrderFromScan(o.payload || {});
-  markIncomingOrder(o.id, 'traitee');
-  incomingOrders.splice(i, 1);
-  renderIncomingOrders();
-  t('Commande importee');
+  t('Commande importee dans le formulaire');
 }
 function dismissIncomingOrder(i){
   var o = incomingOrders[i];
@@ -289,6 +315,92 @@ function scp(id){
   window.scrollTo(0, 0);
   if(id === 'menu') rcm();
   if(id === 'cart') rcc();
+  if(id === 'track') initTrackTab();
+  else stopTrackPolling();
+}
+
+var trackPollInterval = null;
+var STATUS_LABELS = {
+  nouvelle: '🕐 Commande recue, en attente de confirmation...',
+  en_preparation: '👨‍🍳 Votre commande est en preparation !',
+  pret: '✅ Votre commande est prete a recuperer !',
+  traitee: '🎉 Commande recuperee. Merci !',
+  ignoree: '❌ Commande non trouvee ou annulee'
+};
+
+function initTrackTab(){
+  var saved = localStorage.getItem('db_track_code');
+  if(saved){
+    showTrackScreen(saved, null);
+    refreshTrackStatus();
+    startTrackPolling();
+  } else {
+    document.getElementById('track-empty').style.display = 'none';
+    document.getElementById('track-active').style.display = 'none';
+    document.getElementById('track-search').style.display = 'block';
+  }
+}
+
+function showTrackScreen(code, status){
+  document.getElementById('track-empty').style.display = 'none';
+  document.getElementById('track-search').style.display = 'none';
+  document.getElementById('track-active').style.display = 'block';
+  document.getElementById('track-code').innerText = code;
+  var qri = document.getElementById('track-qri');
+  qri.innerHTML = '';
+  try{
+    new QRCode(qri, { text: code, width: 160, height: 160, colorDark: "#000000", colorLight: "#ffffff" });
+    var qimg = qri.querySelector('img'); if(qimg) qimg.alt = 'QR du code de commande';
+  } catch(e){
+    qri.innerHTML = '<div style="font-size:2rem;font-weight:800;text-align:center">' + code + '</div>';
+  }
+  if(status) updateTrackStatusDisplay(status);
+}
+
+function updateTrackStatusDisplay(status){
+  var el = document.getElementById('track-status');
+  el.innerText = STATUS_LABELS[status] || STATUS_LABELS.nouvelle;
+}
+
+function refreshTrackStatus(){
+  var code = localStorage.getItem('db_track_code');
+  if(!code || !sbReady) return;
+  sbClient.rpc('get_order_status', { p_code: code }).then(function(res){
+    if(res && res.data && res.data.length > 0){
+      updateTrackStatusDisplay(res.data[0].status);
+    }
+  }).catch(function(err){ console.warn('Suivi indisponible', err); });
+}
+
+function startTrackPolling(){
+  stopTrackPolling();
+  trackPollInterval = setInterval(refreshTrackStatus, 8000);
+}
+function stopTrackPolling(){
+  if(trackPollInterval){ clearInterval(trackPollInterval); trackPollInterval = null; }
+}
+
+function clearTrackCode(){
+  localStorage.removeItem('db_track_code');
+  stopTrackPolling();
+  document.getElementById('track-active').style.display = 'none';
+  document.getElementById('track-search').style.display = 'block';
+  document.getElementById('track-code-input').value = '';
+}
+
+function lookupTrackCode(){
+  var code = document.getElementById('track-code-input').value.trim();
+  if(!/^[0-9]{4}$/.test(code)){ t('Entrez un code a 4 chiffres'); return; }
+  if(!sbReady){ t('Suivi en direct non configure'); return; }
+  sbClient.rpc('get_order_status', { p_code: code }).then(function(res){
+    if(res && res.data && res.data.length > 0){
+      localStorage.setItem('db_track_code', code);
+      showTrackScreen(code, res.data[0].status);
+      startTrackPolling();
+    } else {
+      t('Aucune commande trouvee avec ce code');
+    }
+  }).catch(function(err){ t('Verification impossible, reessayez'); console.error(err); });
 }
 
 function fcm(cat, btn){
@@ -353,11 +465,10 @@ function rcc(){
   var t = document.getElementById('cct');
   var e = document.getElementById('cce');
   var f = document.getElementById('cof');
-  var q = document.getElementById('cqr');
   if(ccart.length === 0){
-    c.innerHTML = ''; t.style.display = 'none'; e.style.display = 'block'; f.style.display = 'none'; q.style.display = 'none'; return;
+    c.innerHTML = ''; t.style.display = 'none'; e.style.display = 'block'; f.style.display = 'none'; return;
   }
-  e.style.display = 'none'; t.style.display = 'block'; f.style.display = 'flex'; q.style.display = 'none';
+  e.style.display = 'none'; t.style.display = 'block'; f.style.display = 'flex';
   c.innerHTML = ccart.map(function(it){
     var em = db.products.find(function(p){ return p.id === it.id; });
     var pic = em && em.photo ? '<img src="'+em.photo+'" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:10px">' : (em ? em.emoji : '🍽️');
@@ -380,15 +491,19 @@ function sot(btn, type){
 function bco(){
   var tot = ccart.reduce(function(s, c){ return s + c.price * c.qty; }, 0);
   return {
-    items: ccart.map(function(c){ return {name: c.name, price: c.price, qty: c.qty}; }),
+    code: generateOrderCode(),
+    items: ccart.map(function(c){ return {name: c.name, qty: c.qty}; }), // prix retire : le gerant le recalcule depuis son catalogue, ca allege le QR
     total: tot, orderType: cot,
     name: document.getElementById('co-n').value.trim(),
     phone: document.getElementById('co-p').value.trim(),
     address: document.getElementById('co-a').value.trim(),
     notes: document.getElementById('co-nt').value.trim(),
-    ambassadorCode: document.getElementById('co-am').value.trim().toUpperCase(),
-    timestamp: new Date().toISOString()
+    ambassadorCode: document.getElementById('co-am').value.trim().toUpperCase()
   };
+}
+
+function generateOrderCode(){
+  return String(Math.floor(1000 + Math.random() * 9000));
 }
 
 function submitOrder(){
@@ -399,26 +514,15 @@ function submitOrder(){
   if(!document.getElementById('co-consent').checked){ t("Merci d'accepter les conditions d'utilisation"); return; }
   var data = bco();
 
-  var json = JSON.stringify(data);
-  var b64 = btoa(unescape(encodeURIComponent(json)));
-  var qrd = document.getElementById('cqr');
-  var qri = document.getElementById('cqri');
-  qri.innerHTML = '';
-  qrd.style.display = 'block';
-  // Generation locale du QR (aucun service externe, fonctionne hors-ligne)
-  // Sert de preuve visuelle pour le gerant a la recuperation de la commande
-  try{
-    new QRCode(qri, { text: b64, width: 200, height: 200, colorDark: "#000000", colorLight: "#ffffff" });
-    var qimg = qri.querySelector('img'); if(qimg) qimg.alt = 'QR code de la commande';
-  } catch(e){
-    qri.innerHTML = '<div style="padding:20px;background:#fff;color:#000;border-radius:12px;font-family:monospace;font-size:12px;word-break:break-all;max-width:280px">' + b64 + '</div>';
-  }
-  t('Commande enregistree ! Montrez le QR au gerant.');
+  localStorage.setItem('db_track_code', data.code);
+  showTrackScreen(data.code, 'nouvelle');
+  scp('track');
+  t('Commande envoyee !');
 
-  // La synchronisation en direct est un bonus : le QR ci-dessus reste valable meme si elle echoue
+  // La synchronisation en direct est un bonus : le suivi ci-dessus reste affichable meme si elle echoue
   pushOrderToCloud(data).then(function(res){
     if(!res || !res.ok){
-      t('⚠️ Synchro en direct indisponible, mais votre QR reste valable');
+      t('⚠️ Synchro en direct indisponible, montrez votre code au gerant directement');
     }
   });
 
@@ -603,17 +707,38 @@ function stopQrScanner(){
 }
 function onQrScanSuccess(decodedText){
   stopQrScanner();
+  var code = decodedText.trim();
+  if(/^[0-9]{4}$/.test(code)){
+    lookupOrderByCode(code);
+    return;
+  }
+  // Repli : anciens QR au format base64 (avant la mise en place des codes a 4 chiffres)
   try{
     var json = decodeURIComponent(escape(atob(decodedText)));
     var data = JSON.parse(json);
-    fillOrderFromScan(data);
     cm('mos');
+    fillOrderFromScan(data);
     t('Commande importee du QR !');
   } catch(e){
-    t('QR invalide ou illisible');
+    t('Code non reconnu');
     console.error('QR decode error', e);
   }
 }
+
+function lookupOrderByCode(code){
+  if(!sbReady){ t('Connectez-vous pour retrouver une commande par code'); return; }
+  sbClient.from('orders_incoming').select('*').eq('code', code).order('created_at', { ascending: false }).limit(1)
+    .then(function(res){
+      if(res && res.data && res.data.length > 0){
+        cm('mos');
+        fillOrderFromScan(res.data[0].payload || {});
+        t('Commande #' + code + ' importee !');
+      } else {
+        t('Aucune commande trouvee avec le code ' + code);
+      }
+    }).catch(function(err){ t('Recherche impossible'); console.error(err); });
+}
+
 function fillOrderFromScan(data){
   sp('cmd');
   document.getElementById('oc').value = '';
