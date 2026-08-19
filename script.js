@@ -8,17 +8,31 @@ var icm = up.get('mode') === 'client';
 // Va sur https://supabase.com -> New project -> Project Settings -> API
 // Copie "Project URL" et la cle "anon public". Voir README.md pour le detail des etapes.
 var supabaseConfig = {
-  url: "REMPLACE_MOI",
-  anonKey: "REMPLACE_MOI"
+  url: "https://zsiytjsyxlqjhwzufnxo.supabase.co",
+  anonKey: "sb_publishable_5k2aKe9lymjRt3QuLktIqg_bGRis23A"
 };
 var sbClient = null;
 var sbReady = false;
-try{
-  if(supabaseConfig.url !== "REMPLACE_MOI" && typeof supabase !== 'undefined'){
-    sbClient = supabase.createClient(supabaseConfig.url, supabaseConfig.anonKey);
+var supabaseInitError = '';
+function initSupabaseClient(){
+  if(sbReady && sbClient) return true;
+  supabaseInitError = '';
+  try{
+    var lib = (typeof supabase !== 'undefined') ? supabase : (window.supabase || null);
+    if(!lib || typeof lib.createClient !== 'function'){
+      supabaseInitError = 'librairie non chargee';
+      return false;
+    }
+    sbClient = lib.createClient(supabaseConfig.url, supabaseConfig.anonKey);
     sbReady = true;
+    return true;
+  } catch(e){
+    supabaseInitError = (e && e.message) || String(e);
+    console.warn('Supabase init fail', e);
+    return false;
   }
-} catch(e){ console.warn('Supabase non configure', e); }
+}
+initSupabaseClient();
 
 // ===== NTFY (notification push sur le telephone du gerant) =====
 // Sujet ntfy : garde-le secret (pas de nom trop simple/devinable).
@@ -53,10 +67,23 @@ function sendOrderNotification(data){
 }
 
 function pushOrderToCloud(data){
-  if(!sbReady) return Promise.resolve({ ok:false, reason:'not-configured' });
-  return sbClient.from('orders_incoming').insert([{ payload: data, status: 'nouvelle', code: data.code }]).then(function(res){
-    if(res && res.error){ console.error('Envoi Supabase echoue', res.error); return { ok:false, reason:'error', error:res.error }; }
-    return { ok:true };
+  if(!initSupabaseClient() || !sbClient) return Promise.resolve({ ok:false, reason:'not-configured' });
+  var row = { payload: data, status: 'nouvelle' };
+  // colonne code optionnelle (ajoutee via SQL)
+  if(data && data.code) row.code = String(data.code);
+  return sbClient.from('orders_incoming').insert([row]).select('id, created_at, status, code, payload').then(function(res){
+    if(res && res.error){
+      // si la colonne code n'existe pas encore, retenter sans
+      if(String(res.error.message||'').toLowerCase().indexOf('code') >= 0){
+        return sbClient.from('orders_incoming').insert([{ payload: data, status: 'nouvelle' }]).select('id').then(function(r2){
+          if(r2.error){ console.error('Envoi Supabase echoue', r2.error); return { ok:false, reason:'error', error:r2.error }; }
+          return { ok:true, data: r2.data && r2.data[0] };
+        });
+      }
+      console.error('Envoi Supabase echoue', res.error);
+      return { ok:false, reason:'error', error:res.error };
+    }
+    return { ok:true, data: res.data && res.data[0] };
   }).catch(function(err){
     console.error('Envoi Supabase echoue', err);
     return { ok:false, reason:'network', error:err };
@@ -100,7 +127,8 @@ function stopIncomingOrdersFeed(){
 }
 
 function startIncomingOrdersFeed(){
-  stopIncomingOrdersFeed(); // evite les abonnements en double (ex: si l'etat d'auth change plusieurs fois)
+  stopIncomingOrdersFeed();
+  if(!initSupabaseClient() || !sbClient){ t('Supabase non connecte'); return; }
   sbClient.from('orders_incoming').select('*').in('status', ['nouvelle','en_preparation','pret']).order('created_at', { ascending: true })
     .then(function(res){
       if(res && res.data){
@@ -509,24 +537,37 @@ function generateOrderCode(){
 function submitOrder(){
   var name = document.getElementById('co-n').value.trim();
   var phone = document.getElementById('co-p').value.trim();
+  var address = document.getElementById('co-a').value.trim();
   if(!name || !phone){ t('Remplissez nom et telephone'); return; }
   if(ccart.length === 0){ t('Panier vide'); return; }
   if(!document.getElementById('co-consent').checked){ t("Merci d'accepter les conditions d'utilisation"); return; }
+  if(cot === 'livraison' && !address){ t('Adresse de livraison requise'); document.getElementById('co-a').focus(); return; }
+
   var data = bco();
+  // garder aussi ids/prix pour le gerant a l'import
+  data.items = ccart.map(function(c){
+    return { id: c.id, name: c.name, qty: c.qty, price: c.price, cost: c.cost || 0 };
+  });
 
   localStorage.setItem('db_track_code', data.code);
   showTrackScreen(data.code, 'nouvelle');
   scp('track');
-  t('Commande envoyee !');
 
-  // La synchronisation en direct est un bonus : le suivi ci-dessus reste affichable meme si elle echoue
   pushOrderToCloud(data).then(function(res){
-    if(!res || !res.ok){
-      t('⚠️ Synchro en direct indisponible, montrez votre code au gerant directement');
+    if(res && res.ok){
+      sendOrderNotification(data);
+      t('Commande envoyee au gerant');
+    } else {
+      console.warn('Synchro commande', res);
+      t('Code cree — synchro gerant echouee, montrez le code au comptoir');
     }
   });
 
-  sendOrderNotification(data);
+  ccart = [];
+  try{ ucb(); }catch(e){}
+  try{ rcc(); }catch(e){}
+  document.getElementById('cof').reset();
+  try{ sot(document.querySelector('#rb-e'), 'emporter'); }catch(e){}
 }
 
 function contactWhatsApp(){
@@ -1295,6 +1336,7 @@ function rse(){
 
 // ===== INIT =====
 document.addEventListener('DOMContentLoaded', function(){
+  initSupabaseClient();
   ldb();
   if(icm){
     document.getElementById('cm').style.display='block';
@@ -1302,6 +1344,11 @@ document.addEventListener('DOMContentLoaded', function(){
   } else {
     document.getElementById('mm').style.display='block';
     sp('dash');
-    initIncomingOrders();
+    if(sbReady) initIncomingOrders();
+    else {
+      setTimeout(function(){
+        if(initSupabaseClient()) initIncomingOrders();
+      }, 1200);
+    }
   }
 });
