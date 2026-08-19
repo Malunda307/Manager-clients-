@@ -94,11 +94,6 @@
           </label>
           <button type="button" class="bq" style="width:100%" onclick="submitOrder()">✅ Envoyer ma commande</button>
         </form>
-
-        <div class="qrd" id="cqr" style="display:none">
-          <div id="cqri" style="display:flex;justify-content:center;padding:10px"></div>
-          <p>Commande envoyee ! Montrez ce QR au gerant pour confirmer votre commande a la recuperation.</p>
-        </div>
       </div>
 
       <div id="cs-histoire" class="cs">
@@ -145,10 +140,38 @@
       </div>
 
       <div id="cs-track" class="cs">
-        <div class="es">
+        <div id="track-empty" class="es">
           <div class="i">📍</div>
-          <p>Suivi des commandes</p>
-          <p style="font-size:.8rem">Bientot disponible</p>
+          <p>Suivi de commande</p>
+          <p style="font-size:.8rem">Passez une commande pour suivre son statut ici</p>
+        </div>
+
+        <div id="track-active" style="display:none">
+          <div class="qrd">
+            <div id="track-qri" style="display:flex;justify-content:center;padding:10px"></div>
+            <div style="text-align:center;font-size:1.8rem;font-weight:800;letter-spacing:4px;margin:6px 0" id="track-code">----</div>
+            <p style="font-size:.8rem">Montrez ce code au gerant pour confirmer votre commande</p>
+          </div>
+
+          <div class="cd" style="text-align:center;margin-top:15px">
+            <h3 style="margin-bottom:10px">Statut de votre commande</h3>
+            <div id="track-status" style="font-size:1.1rem;font-weight:700;padding:14px;border-radius:12px;background:var(--su2)">🕐 En attente de confirmation...</div>
+            <button type="button" class="bs" style="width:100%;margin-top:12px" onclick="refreshTrackStatus()">🔄 Actualiser</button>
+          </div>
+
+          <div class="cd" style="text-align:center">
+            <p style="font-size:.8rem;color:var(--t2);margin-bottom:8px">Ce n'est pas votre commande, ou vous voulez suivre une autre commande ?</p>
+            <button type="button" class="bs" style="width:100%" onclick="clearTrackCode()">Suivre un autre code</button>
+          </div>
+        </div>
+
+        <div id="track-search" style="display:none">
+          <div class="cd">
+            <h3 style="margin-bottom:10px">Suivre une commande</h3>
+            <label for="track-code-input" class="sr-only">Code a 4 chiffres</label>
+            <input type="text" id="track-code-input" name="track-code-input" placeholder="Code a 4 chiffres" inputmode="numeric" maxlength="4" style="text-align:center;font-size:1.3rem;letter-spacing:4px">
+            <button type="button" class="bq" style="width:100%;margin-top:10px" onclick="lookupTrackCode()">Verifier</button>
+          </div>
         </div>
       </div>
     </div>
